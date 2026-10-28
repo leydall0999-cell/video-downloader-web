@@ -1167,6 +1167,80 @@ def admin_cookies_delete(payload: dict[str, Any] = Body(...),
     return r
 
 
+# ─── 回读候选排序（2026-10-28）：别再拿死 Cookie 去撞墙 ───────────────────────
+# 实测背景：`get` 原来只按「字段多少」排序，谁 k=v 多谁当 `header`。而桌面端
+# 1.0.99 只取 `header` 这一条（不遍历 headers），于是出现两种错配：
+#   · 腾讯视频 3 份全是游客态（静态判 invalid）⇒ 桌面端照样当登录态注入，
+#     解析必然 403；后台看「池里有 Cookie」，两边结论直接打架；
+#   · 同域一份有效 + 一份过期，字段多的那份先返回 ⇒ 好 Cookie 被埋在后面。
+# 现在改成「先按有效性分层、再按完整度」，invalid 一律不下发（返回 found=false
+# 并带 reason）：调用方据此回退匿名/浏览器兜底，比拿死 Cookie 撞墙更容易恢复。
+_STATUS_RANK = {"valid": 3, "unknown": 2}
+
+
+def _entry_status_map(domain: str) -> dict[str, dict]:
+    """该域每条的体检结论 {entry_id: entry}，复用后台概览那套判定，不联网。
+
+    回读在解析热路径上（桌面端超时 15s），绝不能在这里跑联网探针：`_read_domain`
+    只读池文件 + 读验真缓存，静态体检 + 同会话继承，毫秒级。
+    """
+    try:
+        # 🔴 这里必须传缓存里的 **items**，不是整包：`_read_domain` 是
+        # `cache.get(f"{domain}|{eid}")`（见 786 行调用点）。传整包 ⇒ 全部 miss ⇒
+        # 一律退化成静态猜测，实测把 4 条有效优酷全判成「游客态」（2026-10-28 踩过）。
+        info = _read_domain(cp._strip_sub(domain), time.time(),
+                            _load_cache().get("items") or {})
+    except Exception:  # noqa: BLE001 — 体检失败只该降级成「未知」，不该让回读报错
+        logging.getLogger(__name__).warning(
+            "[cookie_pool] get 体检失败 domain=%s", domain, exc_info=True)
+        return {}
+    out: dict[str, dict] = {}
+    for acct in info.get("items") or []:
+        for e in acct.get("entries") or []:
+            rid = str(e.get("id") or "")
+            if rid:
+                out[rid] = e
+    return out
+
+
+def _rank_candidates(domain: str, cands: list[str]) -> tuple[list[dict], int]:
+    """按「有效性 → 完整度」排序候选，并剔除已判死的。返回 (可用行, 剔除数)。
+
+    分层：valid(3) > 未校验且非游客态(2) > 疑似游客态/超 TTL(1) > invalid(剔除)。
+    expired 仍保留为兜底（TTL 只是保守估计，很多站 Cookie 活得比 30 天长），
+    invalid 是「站点明确说没登录」或「缺登录字段」，下发只会把失败推到解析层。
+    """
+    smap = _entry_status_map(domain)
+    rows: list[dict] = []
+    rejected = 0
+    for h in cands:
+        e = smap.get(_entry_id(h)) or {}
+        st = str(e.get("status") or "") or "unknown"
+        detail = str(e.get("detail") or "")
+        suspect = bool(e.get("suspect"))
+        age = int(e.get("age_sec") or 0)
+        expired = bool(age) and age > cp._TTL
+        # 条目投影里**没有** expired 字段（见 _read_domain 的 entries whitelist），
+        # 而 TTL 过期会被覆盖成 status=invalid + 固定 detail（256-261 行）。所以
+        # 「只是超 TTL」≠「站点说没登录」：前者仍留作兜底（TTL 是保守估计，B 站
+        # Cookie 常活 3~6 个月，一刀切会白扔还能用的登录态），后者才真的不下发。
+        ttl_only = expired and "已超过" in detail
+        if st == "valid":
+            rank = 3
+        elif st == "invalid" and not ttl_only:
+            rejected += 1
+            continue
+        elif suspect or expired:
+            rank = 1
+        else:
+            rank = 2
+        rows.append({"header": h, "status": st, "suspect": suspect,
+                     "expired": expired, "parts": _parts_count(h),
+                     "detail": str(e.get("detail") or ""), "_rank": rank})
+    rows.sort(key=lambda r: (-r["_rank"], -r["parts"]))
+    return rows, rejected
+
+
 def _do_get(domain: str) -> dict[str, Any]:
     """桌面端回读：取该域最新有效的 Cookie 明文（+ 优酷 ckey）。
 
@@ -1205,12 +1279,44 @@ def _do_get(domain: str) -> dict[str, Any]:
         cands = []
     if not cands and header:
         cands = [header]
-    if len(cands) > 1:
-        cands.sort(key=lambda h: -sum(1 for p in h.split(";") if "=" in p))
-    _log.info("[cookie_pool] get domain=%s hit=%s ckey=%s cands=%s",
-              root, bool(header), bool(ckey), len(cands))
-    return {"ok": True, "found": bool(header or cands), "domain": root,
-            "header": header, "ckey": ckey, "headers": cands}
+    # 去重：get_cookie 命中的那条通常也在 get_cookies 里，重复下发只会浪费
+    # 调用方的重试预算（百度换直链本来就是逐个候选试，顺序即成本）。
+    seen: set = set()
+    uniq: list = []
+    for h in ([header] if header else []) + cands:
+        if h and h not in seen:
+            seen.add(h)
+            uniq.append(h)
+    rows, rejected = _rank_candidates(root, uniq)
+    ranked = [r["header"] for r in rows]
+    resp: dict[str, Any] = {
+        "ok": True, "found": bool(ranked), "domain": root,
+        "header": ranked[0] if ranked else "", "ckey": ckey, "headers": ranked,
+        # 池里存了几份 / 其中被判死几份：调用方据此区分「池里根本没有」与
+        # 「池里有但全死」，后者要提示补注入而不是当作匿名态静默降级。
+        "stored": len(uniq), "rejected": rejected,
+        "usable": bool(ranked),
+        # 口径：valid/unknown 正常；invalid + found=true 只可能是「仅超 30 天 TTL
+        # 的兜底候选」（entries[].expired 为真），不是站点判定未登录。
+        "status": (rows[0]["status"] if rows else ("invalid" if uniq else "empty")),
+        # 逐条状态（不含明文）：调用方可以只按状态判断，不必解 Cookie
+        "entries": [{"status": r["status"], "suspect": r["suspect"],
+                     "expired": r["expired"], "parts": r["parts"]} for r in rows],
+    }
+    if uniq and not ranked:
+        resp["reason"] = "all_invalid"
+        resp["detail"] = "池里这份登录态已判死（过期或站点判定未登录），未下发"
+    elif rows:
+        resp["detail"] = rows[0]["detail"]
+    if root == "youku.com" and not ckey:
+        # 优酷 UPS 必须带 ckey，只回 Cookie 等于把「缺钥匙」的失败推给解析层，
+        # 现场表现是 -3007 却看不出原因，这里显式标出来。
+        resp["ckey_missing"] = True
+        resp["detail"] = "；".join([x for x in (resp.get("detail") or "",
+                                                "缺 ckey，优酷解析大概率 -3007") if x])
+    _log.info("[cookie_pool] get domain=%s stored=%s served=%s rejected=%s ckey=%s",
+              root, len(uniq), len(ranked), rejected, bool(ckey))
+    return resp
 
 
 # ─── 云端侧入口（共享令牌，供桌面 App 后台代理）─────────────────────────────
@@ -1244,9 +1350,12 @@ def _pool_get_action(domain: str) -> dict[str, Any]:
             cands = [single]
     if not cands:
         return {"ok": True, "found": False, "domain": norm,
-                "header": None, "headers": []}
-    # 字段多的排前：换直链要的是完整的 pan cookie，残缺快照大概率只回密文
-    cands.sort(key=lambda c: -sum(1 for p in c.split(";") if "=" in p))
+                "header": None, "headers": [], "stored": 0, "rejected": 0,
+                "usable": False, "status": "empty", "reason": "empty"}
+    # 有效性优先、完整度次之（见 _rank_candidates 的注释）：换直链要的是完整的
+    # pan cookie，但「完整」排在「还活着」之后 —— 字段最多的那份往往正是过期那份。
+    rows, rejected = _rank_candidates(norm, cands)
+    ranked = [r["header"] for r in rows]
     matched = norm
     for c in cp._candidates(domain):
         try:
@@ -1255,8 +1364,16 @@ def _pool_get_action(domain: str) -> dict[str, Any]:
                 break
         except Exception:
             pass
+    if not ranked:
+        return {"ok": True, "found": False, "domain": matched,
+                "header": None, "headers": [], "stored": len(cands),
+                "rejected": rejected, "usable": False, "status": "invalid",
+                "reason": "all_invalid",
+                "detail": "池里这份登录态已判死（过期或站点判定未登录），未下发"}
     return {"ok": True, "found": True, "domain": matched,
-            "header": cands[0], "headers": cands}
+            "header": ranked[0], "headers": ranked, "stored": len(cands),
+            "rejected": rejected, "usable": True, "status": rows[0]["status"],
+            "detail": rows[0]["detail"]}
 
 
 @router.post("/api/cookie/pool-admin")
