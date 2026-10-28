@@ -1175,7 +1175,6 @@ def admin_cookies_delete(payload: dict[str, Any] = Body(...),
 #   · 同域一份有效 + 一份过期，字段多的那份先返回 ⇒ 好 Cookie 被埋在后面。
 # 现在改成「先按有效性分层、再按完整度」，invalid 一律不下发（返回 found=false
 # 并带 reason）：调用方据此回退匿名/浏览器兜底，比拿死 Cookie 撞墙更容易恢复。
-_STATUS_RANK = {"valid": 3, "unknown": 2}
 
 
 def _entry_status_map(domain: str) -> dict[str, dict]:
