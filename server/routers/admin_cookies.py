@@ -1186,15 +1186,31 @@ def _do_get(domain: str) -> dict[str, Any]:
     root = cp._strip_sub(domain)
     if not cp.is_allowed(root):
         _log.info("[cookie_pool] get 拒绝非白名单域 domain=%s", domain)
-        return {"ok": True, "domain": root, "header": "", "ckey": ""}
+        return {"ok": True, "found": False, "domain": root,
+                "header": "", "ckey": "", "headers": []}
     header = cp.get_cookie(domain) or ""
     ckey = ""
     if root == "youku.com":
         # ckey 与 Cookie 同域存储（优酷 UPS 签名用），桌面端一起回读
         ckey = cp.get_ckey(domain) or ""
-    _log.info("[cookie_pool] get domain=%s hit=%s ckey=%s",
-              root, bool(header), bool(ckey))
-    return {"ok": True, "domain": root, "header": header, "ckey": ckey}
+    # 2026-10-28 修：本函数原先只回 {ok, domain, header, ckey}，**没有 found**，
+    # 而桌面端（1.0.99）判的是 `if d.get("ok") and d.get("found")` ⇒ 云端明明有
+    # 登录态，桌面却一律当「没取到」，云端回读通道等于空转（实测 n=0）。
+    # 同时补 headers（该域全部快照，字段多的在前）：百度同一个 BDUSS 下不同 STOKEN
+    # 换直链成功率不同，只回一条等于替调用方赌运气。
+    cands: list = []
+    try:
+        cands = [h for h in (cp.get_cookies(domain) or []) if h]
+    except Exception:  # noqa: BLE001 — 老池文件/域未登记都不该让回读报错
+        cands = []
+    if not cands and header:
+        cands = [header]
+    if len(cands) > 1:
+        cands.sort(key=lambda h: -sum(1 for p in h.split(";") if "=" in p))
+    _log.info("[cookie_pool] get domain=%s hit=%s ckey=%s cands=%s",
+              root, bool(header), bool(ckey), len(cands))
+    return {"ok": True, "found": bool(header or cands), "domain": root,
+            "header": header, "ckey": ckey, "headers": cands}
 
 
 # ─── 云端侧入口（共享令牌，供桌面 App 后台代理）─────────────────────────────
@@ -1272,6 +1288,10 @@ def cookie_pool_admin(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if action == "delete":
         return _do_delete(str((payload or {}).get("domain") or "").strip(),
                           (payload or {}).get("ids") or [])
-    if action == "get":
+    # 2026-10-28 修：这里原本又写了一次 `if action == "get"`，被上面 1280 行那个
+    # 先 return 掉 ⇒ 永远走不到（死代码），云端池放行改动到不了线上。
+    # 有效通路统一为 get → _do_get（已补齐 found / headers）；这里降级成别名，
+    # 免得再有人以为「改 _pool_get_action 就能生效」。
+    if action == "pool_get":
         return _pool_get_action(str((payload or {}).get("domain") or "").strip())
     raise HTTPException(status_code=400, detail=f"未知动作：{action}")
