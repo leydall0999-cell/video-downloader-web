@@ -83,8 +83,13 @@ def api_version() -> dict:
 
 @router.get('/api/ydlp/version')
 def ydlp_version_api() -> dict:
-    """返回当前与最新 yt-dlp 版本，前端据此提示是否需要更新解析器。"""
-    return {'current': app.ydlp_update.current_version(), 'latest': app.ydlp_update.latest_version()}
+    """返回当前与最新 yt-dlp 版本，前端据此提示是否需要更新解析器。
+
+    2026-10-30：`latest` 改为「本机解释器可安装的最新版」——否则 Python 3.10 的线上机
+    会永远显示落后于 2026.10.26（该版本要求 3.11+），提示更新却装不上，属误导。
+    `latest_upstream` 保留 PyPI 绝对最新版供诊断。
+    """
+    return app.ydlp_update.version_report()
 
 @router.post('/api/ydlp/update')
 async def ydlp_update_api() -> dict:

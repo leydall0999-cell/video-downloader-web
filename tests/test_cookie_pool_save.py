@@ -14,6 +14,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
@@ -22,6 +24,19 @@ import cookie_pool
 
 def _valid_fernet_key() -> str:
     return base64.urlsafe_b64encode(os.urandom(32)).decode()
+
+
+@pytest.fixture(autouse=True)
+def _no_network_verify(monkeypatch):
+    """本组只验证 _save 的加密往返/去重语义，不验证 Cookie 真伪。
+
+    add_cookie 自 2026-10-18 起会调 verify_cookie 验真；B 站分支会真的去问
+    api.bilibili.com（本组用的是假 Cookie，必然被判「未登录」⇒ 拒收），既让
+    离线测试偷偷依赖外网，也会随站点风控时红时绿（2026-10-30 巡检实测：
+    在 HEAD 上就红，与本轮改动无关）。这里统一桩成 None（= 无法判定 ⇒ 放行），
+    与生产语义一致，把断言焦点留给 _save。
+    """
+    monkeypatch.setattr(cookie_pool, "verify_cookie", lambda *a, **k: None)
 
 
 def test_save_keeps_existing_encrypted_entry(monkeypatch, tmp_path):

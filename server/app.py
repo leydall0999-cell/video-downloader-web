@@ -1838,6 +1838,13 @@ async def _auto_update_ytdlp() -> None:
                 except OSError:
                     logger.warning(
                         "[ytdlp] 新版与当前 Python 不兼容且隔离失败，需人工处理 ~/.videodownloader/yt_dlp")
+                # 2026-10-30：隔离后也要落冷却标记。否则每次重启都会重下一次不兼容的包
+                # 再隔离一遍（每次 60~180s 抖动 + 数十 MB 流量，且隔离目录持续堆积）。
+                # 冷却到期后仍会重试——届时若已升级解释器即可自动跟进。
+                try:
+                    _mark.write_text(str(time.time()))
+                except OSError:
+                    pass
                 return
             logger.info("[ytdlp] 自动更新成功 -> %s（重启后生效）", result.get("version"))
             try:

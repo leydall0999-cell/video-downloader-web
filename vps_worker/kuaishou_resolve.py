@@ -74,6 +74,42 @@ def _extract_meta(page) -> tuple[str, str, str]:
     return caption, author, thumb
 
 
+def _poll_streams(page, seconds: float) -> list:
+    """在给定时间窗内轮询 __APOLLO_STATE__ / <video> 里的真实流地址。
+
+    ⚠️ 2026-08 实测：快手新版签名直链（oskwai.com/ksc2/...）已不带 .mp4 后缀，
+       只靠 .mp4 判定会漏掉真实流。改为「CDN 域 + (含 .mp4 或含 /ksc2/ 签名)」。
+    """
+    mp4s = []
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            mp4s = page.evaluate(
+                "() => { const st = window.__APOLLO_STATE__ || {};"
+                " const out = [];"
+                " const walk = (o, d) => {"
+                "  if (d > 20 || o == null) return;"
+                "  if (typeof o === 'string') { const low = o.toLowerCase();"
+                "   if (low.startsWith('http') && (low.includes('kwaicdn') || low.includes('oskwai') || low.includes('ksc2'))"
+                "       && (low.includes('.mp4') || low.includes('/ksc2/') || low.includes('v2.kwaicdn'))) out.push(o); return; }"
+                "  if (typeof o === 'object') for (const v of Object.values(o)) walk(v, d + 1);"
+                " }; walk(st, 0);"
+                " const v = document.querySelector('video');"
+                " if (v && (v.src || v.currentSrc)) out.push(v.src || v.currentSrc);"
+                " return [...new Set(out)]; }"
+            ) or []
+        except Exception:
+            mp4s = []
+        if mp4s:
+            break
+        try:
+            page.mouse.wheel(0, 600)
+        except Exception:
+            pass
+        time.sleep(1.5)
+    return mp4s
+
+
 def resolve(url, timeout=35):
     """解析快手视频，返回 dict（成功）或抛 RuntimeError（失败）。"""
     from playwright.sync_api import sync_playwright
@@ -113,35 +149,20 @@ def resolve(url, timeout=35):
                 )
 
             # 轮询等 __APOLLO_STATE__ 里出现 mp4 直链（首访建 cookie 可能较慢）
-            # ⚠️ 2026-08 实测：快手新版签名直链（oskwai.com/ksc2/...）已不带 .mp4 后缀，
-            #    只靠 .mp4 判定会漏掉真实流。改为「CDN 域 + (含 .mp4 或含 /ksc2/ 签名)」。
-            mp4s = []
-            deadline = time.time() + 25
-            while time.time() < deadline:
-                try:
-                    mp4s = page.evaluate(
-                        "() => { const st = window.__APOLLO_STATE__ || {};"
-                        " const out = [];"
-                        " const walk = (o, d) => {"
-                        "  if (d > 20 || o == null) return;"
-                        "  if (typeof o === 'string') { const low = o.toLowerCase();"
-                        "   if (low.startsWith('http') && (low.includes('kwaicdn') || low.includes('oskwai') || low.includes('ksc2'))"
-                        "       && (low.includes('.mp4') || low.includes('/ksc2/') || low.includes('v2.kwaicdn'))) out.push(o); return; }"
-                        "  if (typeof o === 'object') for (const v of Object.values(o)) walk(v, d + 1);"
-                        " }; walk(st, 0);"
-                        " const v = document.querySelector('video');"
-                        " if (v && (v.src || v.currentSrc)) out.push(v.src || v.currentSrc);"
-                        " return [...new Set(out)]; }"
-                    ) or []
-                except Exception:
-                    mp4s = []
-                if mp4s:
-                    break
-                try:
-                    page.mouse.wheel(0, 600)
-                except Exception:
-                    pass
-                time.sleep(1.5)
+            mp4s = _poll_streams(page, 8)
+            if not mp4s:
+                # 2026-10-30 实测（冷 profile 复现）：设备指纹 Cookie 缺失/过期时，
+                # 首访页面的 <video> 存在但 src 为空、__APOLLO_STATE__ 里零 kwaicdn，
+                # 且该 SPA **不会**自己重取数据 —— 只靠单页 25s 轮询必然超时（用户
+                # 白等 30s 后拿到「无 mp4 直链」）。二次访问带着首访建立的
+                # did/kpf/kwpsec 等指纹 Cookie 才会返回完整数据，实测 reload 后
+                # 1.5s 内即出直链。故改为「短轮询 → reload → 再轮询」。
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                if "BROWSE_SLIDE_PHOTO" in (page.url or ""):
+                    raise RuntimeError(
+                        "这是快手图集/图文作品，只有幻灯片播放流，没有可下载的视频直链"
+                    )
+                mp4s = _poll_streams(page, 12)
 
             if not mp4s:
                 raise RuntimeError("未解析到快手视频流（APOLLO_STATE 无 mp4 直链）")
