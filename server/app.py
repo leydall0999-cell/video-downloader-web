@@ -1815,6 +1815,30 @@ async def _auto_update_ytdlp() -> None:
         # 用线程跑阻塞的 PyPI 下载（requests 同步）
         result = await _asyncio.to_thread(ydlp_update.update)
         if result.get("updated"):
+            # 2026-10-30 护栏：新 yt-dlp 必须能被**当前解释器**导入才算更新成功。
+            # 今晚事故复盘：更新器拉到要求 Python≥3.11 的新版 yt-dlp 存进
+            # ~/.videodownloader/yt_dlp 影子目录，而服务 venv 是 3.10 ⇒ 运行中进程
+            # 无恙、下次重启必崩（ImportError 崩溃循环，2026-10-30 02:35 实际发生）。
+            import subprocess as _sp
+            import sys as _sys
+            _chk = _sp.run(
+                [_sys.executable, "-c",
+                 "import sys; sys.path.insert(0, r'%s'); import yt_dlp"
+                 % (Path.home() / ".videodownloader" / "yt_dlp")],
+                capture_output=True, timeout=120)
+            if _chk.returncode != 0:
+                _bad = Path.home() / ".videodownloader" / "yt_dlp"
+                _quar = Path.home() / ".videodownloader" / (
+                    "yt_dlp.incompatible-quarantine-%s" % time.strftime("%Y%m%d-%H%M%S"))
+                try:
+                    _bad.rename(_quar)
+                    logger.warning(
+                        "[ytdlp] 新版与当前 Python %s 不兼容，已隔离到 %s（继续用 pip 侧旧版，本次不写成功标记）",
+                        _sys.version.split()[0], _quar.name)
+                except OSError:
+                    logger.warning(
+                        "[ytdlp] 新版与当前 Python 不兼容且隔离失败，需人工处理 ~/.videodownloader/yt_dlp")
+                return
             logger.info("[ytdlp] 自动更新成功 -> %s（重启后生效）", result.get("version"))
             try:
                 _mark.write_text(str(time.time()))

@@ -1375,8 +1375,27 @@ def _pool_get_action(domain: str) -> dict[str, Any]:
             "detail": rows[0]["detail"]}
 
 
+# 2026-10-30：贡献令牌注入的按 IP 节流（只约束贡献令牌；同步令牌不受影响）
+_CONTRIB_RATE: dict[str, list[float]] = {}
+_CONTRIB_RATE_LOCK = threading.Lock()
+_CONTRIB_RATE_MAX = 12       # 每窗口每 IP 最多注入次数（正常用户几十天也用不到几次）
+_CONTRIB_RATE_WIN = 3600.0   # 窗口 1 小时
+
+
+def _contribute_rate_ok(ip: str) -> bool:
+    now = time.time()
+    with _CONTRIB_RATE_LOCK:
+        lst = [t for t in _CONTRIB_RATE.get(ip, []) if now - t < _CONTRIB_RATE_WIN]
+        if len(lst) >= _CONTRIB_RATE_MAX:
+            _CONTRIB_RATE[ip] = lst
+            return False
+        lst.append(now)
+        _CONTRIB_RATE[ip] = lst
+        return True
+
+
 @router.post("/api/cookie/pool-admin")
-def cookie_pool_admin(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def cookie_pool_admin(payload: dict[str, Any] = Body(...), request: Request = None) -> dict[str, Any]:
     """云端池的管理入口，仅服务桌面 App 后台代理。
 
     鉴权用 `VDL_COOKIE_SYNC_TOKEN`（与 /api/cookie/sync 同一把钥匙）：
@@ -1387,8 +1406,21 @@ def cookie_pool_admin(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     其余动作（overview / verify / delete）仍只暴露脱敏信息。
     """
     tok = (os.environ.get("VDL_COOKIE_SYNC_TOKEN") or "").strip()
-    if not tok or str((payload or {}).get("token") or "") != tok:
-        raise HTTPException(status_code=403, detail="无效令牌")
+    supplied = str((payload or {}).get("token") or "")
+    if tok and supplied == tok:
+        pass  # 同步令牌：全权（本就允许写池，读/验/删不扩大暴露面）
+    else:
+        # 2026-10-30：只写贡献令牌——桌面端用户显式开启「自动贡献」后用它注入。
+        # 仅放行 inject 且限定 baidu.com（不给 get/overview/verify/delete），
+        # 并按 IP 节流；其余一律 403（对外文案与原「无效令牌」一致，不泄露闸型）。
+        ctok = (os.environ.get("VDL_COOKIE_CONTRIBUTION_TOKEN") or "").strip()
+        action_now = str((payload or {}).get("action") or "overview")
+        ip = (request.client.host if (request is not None and request.client) else "") or "unknown"
+        if (not ctok or supplied != ctok
+                or action_now != "inject"
+                or str((payload or {}).get("domain") or "").strip() != "baidu.com"
+                or not _contribute_rate_ok(ip)):
+            raise HTTPException(status_code=403, detail="无效令牌")
     action = str((payload or {}).get("action") or "overview")
     if action == "overview":
         return _overview()
