@@ -1169,6 +1169,56 @@ def _merge_peer_demand(local_rows: list, days: int) -> tuple[bool, list]:
     return True, out
 
 
+def _merge_center_demand(rows: list, days: int) -> tuple[bool, list]:
+    """拉授权中心 demand_query（桌面 App 经 demand_report 上报的需求榜）合并。
+
+    授权中心是桌面端需求的统一收口（Mac/Win 各自本机日志不再互通），worker 后台
+    视图叠加这份数据，才能让「Windows 新需求」在「Mac 后台」也看得到。中心不可达 /
+    未配 admin token → 原样返回本地+peer 结果（center_ok=False 明示，不阻断后台）。
+    """
+    from admin_store import _license_admin_token
+    tok = _license_admin_token()
+    if not tok:
+        return False, rows
+    try:
+        import license_client
+        r = license_client.demand_query_remote(tok, days=days)
+    except Exception:
+        return False, rows
+    if not isinstance(r, dict) or not r.get("ok"):
+        return False, rows
+    center_rows = r.get("demand") or []
+    by_host = {x["host"]: dict(x) for x in rows}
+    for cr in center_rows:
+        h = cr.get("host")
+        if not h:
+            continue
+        cur = by_host.get(h)
+        if cur:
+            cw = set(cr.get("weeks") or [])
+            lw = set(cur.get("weeks") or [])
+            if cw or lw:
+                merged_weeks = cw | lw
+                cur["weeks"] = sorted(merged_weeks, reverse=True)[:12]
+                cur["weeks_count"] = len(merged_weeks)
+            else:
+                cur["weeks_count"] = _demand_weeks(cur) + _demand_weeks(cr)
+            cur["days_count"] = cur["weeks_count"]
+            cur["total"] += int(cr.get("total") or 0)
+            for c, n in (cr.get("categories") or {}).items():
+                cur["categories"][c] = cur["categories"].get(c, 0) + int(n or 0)
+            if float(cr.get("last_ts") or 0) >= float(cur.get("last_ts") or 0):
+                cur["last_ts"] = cr.get("last_ts")
+                cur["last_url"] = cr.get("last_url") or cur.get("last_url")
+            cur["nodes"] = sorted(set(cur.get("nodes") or []) | set(cr.get("nodes") or []))
+        else:
+            row = dict(cr)
+            row["nodes"] = sorted(set(cr.get("nodes") or ["app"]))
+            by_host[h] = row
+    out = sorted(by_host.values(), key=lambda x: (-_demand_weeks(x), -x.get("last_ts", 0)))
+    return True, out
+
+
 @router.get('/api/admin/resolve-demand')
 def admin_resolve_demand(request: app.Request, days: int = 84):
     is_internal = _internal_token_ok(request)
@@ -1180,7 +1230,9 @@ def admin_resolve_demand(request: app.Request, days: int = 84):
         # 内部调用（对端来拉数据）只回本地，绝不再触发合并——防递归
         return {"ok": True, "days": days, "demand": rows, "total_sites": len(rows), "peer_ok": False}
     peer_ok, merged = _merge_peer_demand(rows, days)
-    return {"ok": True, "days": days, "demand": merged, "total_sites": len(merged), "peer_ok": peer_ok}
+    center_ok, merged2 = _merge_center_demand(merged, days)
+    return {"ok": True, "days": days, "demand": merged2, "total_sites": len(merged2),
+            "peer_ok": peer_ok, "center_ok": center_ok}
 
 
 # ── 会员中心公告（2026-10-18）──────────────────────────────────────────────
