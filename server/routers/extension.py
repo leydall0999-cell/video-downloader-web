@@ -162,7 +162,7 @@ _R2_INSTALLER_URLS: dict[str, str] = {
     "macos-zip": os.environ.get("VDL_R2_INSTALLER_MACOS_ZIP")
                  or "https://download.hanyuxz.top/VideoDownloader.app.zip",
     "windows": os.environ.get("VDL_R2_INSTALLER_WINDOWS")
-               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.0.74.exe",
+               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.1.05.exe",
 }
 
 # 安装包媒体类型按扩展名取（DMG≠ZIP≠EXE，写死 zip 会让浏览器把 dmg 也当 zip 处理）。
