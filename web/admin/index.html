@@ -589,6 +589,9 @@
     // 省掉「还要往下翻两屏」。没有这个 hash 就完全不干预，正常浏览不受影响。
     if (location.hash === '#platform-health') {
       insightsJob.then(() => {
+        // 从 App 按钮进来是奔着数据看的：三个折叠区先展开，否则滚到面板也只看到
+        // 三个「点击展开」，等于白滚一趟。
+        document.querySelectorAll('#healthPanel details.sub').forEach((el) => { el.open = true; });
         const target = $('healthPanel');
         if (target) setTimeout(() => {
           target.scrollIntoView({ behavior: 'smooth', block: 'start' });
