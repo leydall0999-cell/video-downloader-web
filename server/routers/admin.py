@@ -358,6 +358,52 @@ def admin_stats_reset(request: Request = None) -> dict[str, Any]:
     return reset_stats()
 
 
+@router.get("/api/admin/platform-health")
+def admin_platform_health(days: int = 30, request: Request = None) -> dict[str, Any]:
+    """平台健康证据源（2026-11-01）：成功遥测 + 需求榜 + 最近一次巡检健康表。
+
+    为什么要单独开这个端点：域名级**解析成功**遥测（`platform_telemetry`）原来
+    是只落在 ECS 本机的孤儿数据 —— 数据一直在写，但后台没有任何入口读它，
+    管理员等于看不见。这里把三份一次给全，且**只读**（require_admin，非 super）。
+
+    隐私口径：success 只有 `host + 时间 + 平台 key`，**不含任何 URL**（URL 可能带
+    私密视频 ID / 分享者身份 / 签名 token）。
+    """
+    require_admin(request)
+    import json as _json
+    import os
+    from pathlib import Path
+
+    base = Path(os.environ.get("VDL_DATA_DIR") or (Path.home() / ".video-downloader"))
+    try:
+        import platform_telemetry
+        _days = max(1, min(int(days or 30), 365))
+        succ = platform_telemetry.success_summary(days=_days, base_dir=base)
+    except Exception:  # noqa: BLE001 — 后台查询失败不该 500
+        succ = []
+    try:
+        import resolve_demand
+        dem = resolve_demand.demand_summary(days=84, base_dir=base)
+    except Exception:  # noqa: BLE001
+        dem = []
+    # 巡检健康表由 cron 产出的 platform_health_check.py 写在**仓库根/data**，
+    # 而本文件在 server/routers/ ⇒ ECS 上是 parents[2]/data，本地开发是
+    # parents[1]/data。两处都探一下，取第一个存在的。
+    check = None
+    _here = Path(__file__).resolve()
+    for _cand in (_here.parents[2] / "data" / "platform_health.json",
+                  _here.parents[1] / "data" / "platform_health.json"):
+        try:
+            if _cand.is_file():
+                check = _json.loads(_cand.read_text(encoding="utf-8"))
+                check["_file"] = str(_cand)
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    return {"ok": True, "data_dir": str(base), "days": int(days or 30),
+            "success": succ, "demand": dem, "check": check}
+
+
 @router.get("/api/admin/config")
 def admin_config(request: Request = None) -> dict[str, Any]:
     require_admin(request)

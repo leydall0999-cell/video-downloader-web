@@ -1763,6 +1763,7 @@ class MembershipStore:
         if q.get("unlimited") or q.get("unknown"):
             return {"ok": True, "resource": resource, "unlimited": q.get("unlimited", False)}
         if not q["allowed"]:
+            _note_quota_block(resource)      # 会员墙拦截计数（旁路，见函数注释）
             if q.get("tier") == "free":
                 if resource == "download":   # 保持下载文案不变（前端/测试依赖）
                     msg = (f"今日免费下载额度已用尽（{q['limit']}/日）"
@@ -1796,6 +1797,7 @@ class MembershipStore:
         used = int(self._state["daily_usage"].get(resource, 0))
         new_used = used + n
         if new_used > q["limit"]:
+            _note_quota_block(resource)      # 会员墙拦截计数（并发超限的同一条路径）
             return {"ok": False, "error": f"超出 {resource} 日配额上限 {q['limit']}",
                     "resource": resource, "code": "MEMBER_QUOTA"}
         self._state["daily_usage"][resource] = new_used
@@ -1881,6 +1883,23 @@ class MembershipStore:
             for it in lst:
                 if isinstance(it, dict) and str(it.get("id") or "") == ref:
                     yield it
+
+
+def _note_quota_block(resource: str) -> None:
+    """记一次「会员墙拦截」（2026-11-01）。
+
+    这是全链路里**唯一既不进需求库、也不进授权中心**的信号：用户被配额拦住时
+    只在前端弹个提示就消失了，后台看不到「到底多少人卡在配额上」——而这恰恰
+    是转化瓶颈最关键的一项（谁被拦、被哪个功能拦）。
+
+    落本机 stats.json（后台 `/api/admin/stats` 直接可读），零新增通道、
+    零上报成本。旁路统计，任何异常一律静默：绝不能因为记账失败而改变拦截结果。
+    """
+    try:
+        import stats
+        stats.record_event("quota_block_" + str(resource or "unknown")[:24])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _new_usage_ref() -> str:

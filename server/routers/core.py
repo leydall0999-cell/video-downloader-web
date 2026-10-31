@@ -393,7 +393,8 @@ def _proxy_host_guard(ip: str, host: str) -> bool:
 
 
 @router.get('/api/media/proxy')
-def media_proxy(u: str='', cookie: str='', dl: str='', request: app.Request=None, force_range: str=''):
+def media_proxy(u: str='', cookie: str='', dl: str='', request: app.Request=None, force_range: str='',
+                usage_ref: str=''):
     """下载用媒体中继（对标 DataTool 的 /api/proxy/media）。
 
     为什么下载必须走服务端中继：浏览器 `fetch` 跨域拿不到 CDN 的
@@ -480,7 +481,10 @@ def media_proxy(u: str='', cookie: str='', dl: str='', request: app.Request=None
         'Cache-Control': 'no-store',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': 'Range',
-        'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type',
+        # X-Usage-Ref：本次用量的回写标识（2026-11-01 网盘结果回写）。同源 fetch
+        # 本可直接读，但显式 expose 一层，避免将来换跨域部署时静默读不到。
+        'Access-Control-Expose-Headers': ('Content-Length, Content-Range, Accept-Ranges, '
+                                          'Content-Type, X-Usage-Ref'),
         'X-Accel-Buffering': 'no',
         # 下载语义：始终声明支持 Range，这样前端 3 路并发各拿一段互不干扰。
         'Accept-Ranges': resp.headers.get('Accept-Ranges') or 'bytes',
@@ -489,6 +493,13 @@ def media_proxy(u: str='', cookie: str='', dl: str='', request: app.Request=None
         _resp_headers['Content-Length'] = resp.headers['Content-Length']
     if (_client_range or force_range) and resp.status_code == 206 and resp.headers.get('Content-Range'):
         _resp_headers['Content-Range'] = resp.headers['Content-Range']
+    # 网盘下载是**流式中转**，服务端拿不到「文件真的存到用户磁盘了」这个信号
+    # （下载中途会带 Range 断点续传，每次都是独立请求，服务端只知道自己转了多少
+    # 字节）。所以把用量标识原样透出去，由前端在**真正保存成功/失败**的那一刻
+    # 回写 —— 否则上游只能记「点了下载 N 次」，后台永远看不到成没成
+    # （实测 cloud_drive 46 条明细 0 条带结果字段）。
+    if usage_ref:
+        _resp_headers['X-Usage-Ref'] = str(usage_ref)[:64]
     if dl:
         _base = content_type.split(';')[0].strip().lower()
         _ext = _MEDIA_EXT_BY_TYPE.get(_base, '')

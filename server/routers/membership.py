@@ -192,5 +192,12 @@ def usage_result(request: Request, payload: dict[str, Any] = Body(...)) -> dict[
         store = _store(request)
     if not ref:
         return {"ok": False, "error": "没有可回写的用量记录", "code": "NO_REF"}
-    hit = store.mark_usage_result(ref, ok, resource="download", size=size)
-    return {"ok": True, "marked": bool(hit)}
+    # resource（2026-11-01）：网盘下载（cloud_drive）同样是「浏览器侧才知道存没存成」，
+    # 但它的明细挂在 cloud_drive 桶下，回写必须带对资源键，否则标不到条目、云端也
+    # 找不到（实测网盘 46 条明细 0 条带结果，后台只能看到次数看不到成败）。
+    # 白名单限定：不接受任意 resource，避免前端拿它去戳别的桶。
+    _res = str(payload.get("resource") or "download").strip()[:32] or "download"
+    if _res not in ("download", "cloud_drive"):
+        _res = "download"
+    hit = store.mark_usage_result(ref, ok, resource=_res, size=size)
+    return {"ok": True, "marked": bool(hit), "resource": _res}

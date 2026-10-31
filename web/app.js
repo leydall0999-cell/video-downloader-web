@@ -7494,6 +7494,11 @@
     let lastPaint = 0;
     let baseDone = 0;      // 本轮开始时的已收字节 —— 算速度要减掉它，否则续传时会虚高
     let t0 = Date.now();
+    // 网盘用量回写标识：服务端是**流式中转**，只知道自己转了多少字节，不知道文件
+    // 到底有没有存到用户磁盘（中途断流还要带 Range 续传，每次都是独立请求）。
+    // 所以由服务端把 ref 放进响应头，这里在真正保存成功/失败时回写结果 ——
+    // 不这么做后台只能看到「点了下载 N 次」，看不到成没成。
+    let uRef = '';
     const paint = (extra) => {
       const sec = Math.max(0.001, (Date.now() - t0) / 1000);
       const sp = Math.max(0, Math.round((done - baseDone) / sec));
@@ -7555,6 +7560,11 @@
           chunks = [];
           if (writable) { try { await writable.abort(); } catch (_) { /* ignore */ } writable = null; }
         }
+        // 只有「计次的那次请求」（不带 Range 的首包）会带回用量标识；续传包没有。
+        if (!uRef) {
+          const _ur = resp.headers.get('X-Usage-Ref');
+          if (_ur) uRef = _ur;
+        }
         const rangeTotal = panRangeTotal(resp.headers.get('Content-Range'));
         if (rangeTotal > 0) {
           total = rangeTotal;
@@ -7609,9 +7619,11 @@
         await writable.close();
         writable = null;
         if (total > 0 && done < total) {
+          panReportResult(uRef, false, done);   // 没下完：如实记失败，别让后台以为是成功
           panSetStatus(`只下到 ${formatBytes(done)}/${formatBytes(total)}，请重新点击下载`, true);
           return;
         }
+        panReportResult(uRef, true, done);
         panSetStatus('已保存：' + name);
         return;
       }
@@ -7623,9 +7635,11 @@
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      panReportResult(uRef, true, done);
       panSetStatus('已开始下载：' + name);
     } catch (e) {
       try { if (writable) await writable.abort(); } catch (_) { /* ignore */ }
+      panReportResult(uRef, false, done);
       panSetStatus((e && e.message) || '下载失败', true);
     } finally {
       panTasks.delete(f.id);
@@ -7636,6 +7650,22 @@
       if (cancelBtn) cancelBtn.remove();
     }
   };
+
+  // 网盘下载结果回写（2026-11-01）：服务端是流式中转，拿不到「文件真的存到用户
+  // 磁盘了」这个信号，由前端在**真正成功/失败**的那一刻补一条回写，后台
+  // 「使用详情」才能区分「下了但没成」与「真的下好了」。失败一律静默，
+  // 记账绝不能反过来影响下载本身。
+  function panReportResult(ref, ok, size) {
+    if (!ref) return;
+    try {
+      Promise.resolve(request('/api/usage/result', {
+        method: 'POST',
+        body: JSON.stringify({
+          ref: ref, ok: !!ok, size: Number(size) || 0, resource: 'cloud_drive'
+        })
+      })).catch(() => {});
+    } catch (_) { /* 回写失败绝不影响下载 */ }
+  }
 
   function switchView(view) {
     // 首帧兜底标记（<head> 里的 data-boot）只负责第一次绘制；

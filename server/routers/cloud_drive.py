@@ -312,6 +312,7 @@ def cloud_drive_download(request: app.Request):
     # 放行即计数（同步流式中转没有「任务完成」回写点，请求即代表一次使用）。
     # 🔴 续传请求（起点 > 0）**不重复计次**：同一个文件重连十次也只算用了一次，
     #    否则网络每抖一次就扣一次，用户的每日次数会被白白吃光。
+    _cd_ref = ""
     if not _resume_from:
         _cd_store = app.current_member_store(request)
         _cd_q = _cd_store.quota_state("cloud_drive")
@@ -323,7 +324,10 @@ def cloud_drive_download(request: app.Request):
                 _cd_detail = f"今日网盘下载配额已用尽（{_cd_q['limit']}/日）"
             raise app.HTTPException(status_code=402, detail=_cd_detail)
         try:
-            _cd_store.use_daily("cloud_drive", 1, title=name, platform="百度网盘")
+            # 接住 ref：它是这次用量的幂等键。前端在文件**真正保存成功/失败**后
+            # 拿它回写结果（服务端是流式中转，自己不知道用户磁盘上到底存成了没有）。
+            _cd_use = _cd_store.use_daily("cloud_drive", 1, title=name, platform="百度网盘")
+            _cd_ref = str((_cd_use or {}).get("ref") or "") if isinstance(_cd_use, dict) else ""
         except Exception:  # noqa: BLE001 — 计数失败 fail-open，绝不阻断下载
             pass
 
@@ -335,4 +339,4 @@ def cloud_drive_download(request: app.Request):
     # dlink 不出现在 URL 里（令牌 → dlink 在服务端解开），百度 cookie 也不出服务器。
     from routers.core import media_proxy
     return media_proxy(u=dlink, cookie=cookie, dl=name, request=request,
-                       force_range=_client_range or "bytes=0-")
+                       force_range=_client_range or "bytes=0-", usage_ref=_cd_ref)
