@@ -272,6 +272,37 @@
     geo_or_paywall: '地区/付费墙',
     content_gone: '内容已删',
   };
+  // 已处理过的域名：榜单是 append-only 的历史账，修好了也不会自己消失。
+  // since = 该修复上线的时间点。最近一条需求早于 since ⇒ 修完没再复发 ⇒ 已解决；
+  // 晚于 since ⇒ 修复后又被要过 ⇒ 没说好，按「又复发」标出来（这条比绿标重要）。
+  const RESOLVED = [
+    {
+      hosts: ['pan.baidu.com', 'pan.quark.cn', 'aliyundrive.com', '115.com',
+        'cloud.189.cn', 'yun.139.com', 'share.weiyun.com', 'pan.xunlei.com',
+        '123pan.com', 'lanzou.com'],
+      since: '2026-10-31',
+      note: '已改为引导到「网盘」页粘贴，不再当视频解析',
+    },
+    {
+      hosts: ['xiaohongshu.com'],
+      since: '2026-11-01',
+      note: '已提示改用 App 里「分享 → 复制链接」',
+    },
+    {
+      hosts: ['shu-watanabe.com'],
+      since: '2026-11-01',
+      note: '付费会员站，已明确告知不提供解析',
+    },
+  // 解析成「本地零点」：直接 Date.parse('2026-11-01') 走 UTC，会把当天凌晨的需求
+  // 误判成修复前（差 8 小时），必须显式补 T00:00:00 交给本地时区。
+  ].map((r) => ({ ...r, sinceTs: new Date(r.since + 'T00:00:00').getTime() / 1000 }));
+
+  function resolvedHit(host) {
+    const h = String(host || '').toLowerCase();
+    if (!h) return null;
+    return RESOLVED.find((r) => r.hosts.some((p) => h === p || h.endsWith('.' + p))) || null;
+  }
+
   function chip(status) {
     const s = STATUS_CHIP[status] || ['mute', status || '—'];
     return '<span class="chip ' + s[0] + '">' + esc(s[1]) + '</span>';
@@ -371,14 +402,24 @@
     const succHosts = new Set((succ || []).map((r) => r.host));
     const dem = d.demand || [];
     $('demandBox').innerHTML = table(
-      ['域名', '覆盖周数', '需求次数', '最近一次', '分类', '有无成功'],
+      ['域名', '覆盖周数', '需求次数', '最近一次', '分类', '状态'],
       dem.map((r) => {
         const cats = r.categories || {};
         const catTxt = Object.keys(cats)
           .map((k) => (CAT_LABEL[k] || k) + ' ×' + cats[k]).join('　');
-        const never = succHosts.has(r.host)
-          ? '<span class="chip good">有</span>'
-          : '<span class="chip bad">从未成功</span>';
+        const hit = resolvedHit(r.host);
+        let never;
+        if (hit && Number(r.last_ts || 0) <= hit.sinceTs) {
+          never = '<span class="chip good">已解决</span>'
+            + '<br><span class="note">' + esc(hit.note) + '（' + esc(hit.since) + '）</span>';
+        } else if (hit) {
+          never = '<span class="chip warn">已修·又复发</span>'
+            + '<br><span class="note">' + esc(hit.note) + '后又有人要，说明没修好</span>';
+        } else if (succHosts.has(r.host)) {
+          never = '<span class="chip good">有成功</span>';
+        } else {
+          never = '<span class="chip bad">从未成功</span>';
+        }
         const url = r.last_url
           ? '<details class="ev"><summary>最近一条</summary><pre>' + esc(r.last_url) + '</pre></details>'
           : '';
