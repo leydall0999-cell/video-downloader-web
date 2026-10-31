@@ -842,6 +842,47 @@ def _is_member_any(store) -> bool:
 
 # ---- 解析失败需求 → 授权中心（2026-10-31：网页版本机需求此前不上报，后台缺一角）---- #
 
+_DEMAND_TOKEN_CACHE: dict = {"token": "", "ts": 0.0, "ttl": 600.0}
+
+
+def _demand_fallback_token() -> str:
+    """网页版专属兜底：worker 自身无云端会话时，借一个已登录用户的云端 token 上报。
+
+    「解析需求榜」是站点热度统计，租户归属不重要，只要有任一有效 token 把数据
+    推进授权中心池子即可。从 memberships/u_*.json 里挑 last_sync 最新的有效 token，
+    缓存 10 分钟避免每报一次扫一遍磁盘。
+    """
+    global _DEMAND_TOKEN_CACHE
+    now = time.time()
+    if _DEMAND_TOKEN_CACHE["token"] and now - _DEMAND_TOKEN_CACHE["ts"] < _DEMAND_TOKEN_CACHE["ttl"]:
+        return _DEMAND_TOKEN_CACHE["token"]
+    try:
+        base = Path(os.environ.get("VDL_DATA_DIR") or (Path.home() / ".video-downloader"))
+        mp = base / "memberships"
+        if mp.is_dir():
+            best_tok, best_ts = "", 0.0
+            for f in mp.glob("u_*.json"):
+                try:
+                    d = json.loads(f.read_text(encoding="utf-8") or "{}")
+                except Exception:
+                    continue
+                acc = (d.get("meta") or {}).get("account") or {}
+                tok = str(acc.get("token") or "").strip()
+                if not tok:
+                    continue
+                try:
+                    ls = float(acc.get("last_sync") or 0)
+                except (TypeError, ValueError):
+                    ls = 0.0
+                if ls >= best_ts:
+                    best_ts, best_tok = ls, tok
+            _DEMAND_TOKEN_CACHE = {"token": best_tok, "ts": now, "ttl": 600.0}
+            return best_tok
+    except Exception:
+        pass
+    return ""
+
+
 def _demand_cloud_token() -> str:
     """网页版上报需求的身份 token（未登录/离线测试 → 空串，调用方静默跳过）。
 
@@ -849,13 +890,18 @@ def _demand_cloud_token() -> str:
     member_store 的云端会话**上报即可——租户归属不重要，进池才算数。
     🔴 走网页版既有的 `_cloud_quota_token`（cloud_session），不要用
     `status()["account"]`（公开视图，不含 token）。
+    🔴 网页版 worker 自身通常不登录云端（无 account），此时回落到 memberships/
+    下任一已登录用户的云端 token 上报（租户归属不重要，见 _demand_fallback_token）。
     """
     if "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("VDL_OFFLINE_TESTS"):
         return ""
     try:
-        return _cloud_quota_token(member_store)
+        tok = _cloud_quota_token(member_store)
+        if tok:
+            return tok
     except Exception:
-        return ""
+        pass
+    return _demand_fallback_token()
 
 
 def report_demand_async(host: str, url: str = "", category: str = "unsupported_platform",
