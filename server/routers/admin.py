@@ -415,6 +415,29 @@ def admin_platform_health(days: int = 30, request: Request = None) -> dict[str, 
             "repair_tickets": tickets}
 
 
+@router.get("/api/admin/platform-usage")
+def admin_platform_usage(days: int = 30, refresh: bool = False,
+                         request: Request = None) -> dict[str, Any]:
+    """三端用量 → 平台全景（2026-11-01）。只读，require_admin。
+
+    数据来自授权中心：三端每次**真正消耗配额**都会上报一条明细（平台 + 时间 +
+    结果），这里按平台聚合。分不出端（明细里没有 mac/win/web 字段），所以是
+    三端合计 —— 界面文案必须照实写，别写成「网页版用量」。
+
+    隐私：**不下发标题 `t`**，只给计数 / 涉及账号数 / 最近时间。后台需要的是
+    「哪个平台被用得最多」，不是用户看了什么。
+    """
+    require_admin(request)
+    try:
+        import platform_usage
+
+        return platform_usage.overview(days=days, force=bool(refresh))
+    except Exception as exc:  # noqa: BLE001 — 后台查询失败不该 500
+        return {"ok": False, "error": type(exc).__name__, "days": int(days or 30),
+                "platforms": [],
+                "totals": {"events": 0, "accounts": 0, "platforms": 0}}
+
+
 @router.get("/api/admin/config")
 def admin_config(request: Request = None) -> dict[str, Any]:
     require_admin(request)

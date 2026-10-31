@@ -141,6 +141,18 @@
       <summary>解析需求榜（用户要但没拿到，按域名聚合）</summary>
       <div id="demandBox"></div>
     </details>
+    <details class="sub" id="usageFold">
+      <summary>三端用量 · 平台全景（Mac / Win / 网页合计）</summary>
+      <p class="note" style="margin:8px 0 10px">
+        数据来自授权中心：三端每次<b>真正消耗配额</b>才上报一条（平台 + 时间 + 结果），
+        所以下面这些数字是<b>实际用上</b>的次数，不是解析请求数。
+        明细里没有端标识，分不出哪条来自哪个端，这是三端合计；
+        纯解析失败不进这里（看上面的需求榜）。
+      </p>
+      <div class="kpis" id="usageKpis"></div>
+      <div id="usageBox"></div>
+      <p class="note" id="usageMeta"></p>
+    </details>
   </section>
 
   <section class="panel" id="quotaPanel" style="display:none">
@@ -433,6 +445,70 @@
       '最近 12 周没有未满足的解析需求。');
   }
 
+  // 三端用量 · 平台全景（2026-11-01）
+  // 数据源是授权中心：三端每次真消耗配额上报一条明细（平台/时间/结果）。
+  // 这里只展示计数，**不展示标题** —— 后台要看的是「哪个平台用得多」，不是用户看了什么。
+  function renderUsage(d) {
+    const rows = (d && d.platforms) || [];
+    const totals = (d && d.totals) || {};
+    if (!d || d.ok === false) {
+      $('usageKpis').innerHTML = '';
+      $('usageBox').innerHTML = '<p class="empty">拿不到授权中心的用量聚合'
+        + (d && d.error ? '（' + esc(d.error) + '）' : '')
+        + '。其余面板不受影响。</p>';
+      $('usageMeta').textContent = '';
+      return;
+    }
+    $('usageKpis').innerHTML = kpi(totals.events || 0, '三端实际用量')
+      + kpi(totals.accounts || 0, '涉及账号')
+      + kpi(totals.platforms || 0, '平台数')
+      + kpi((d.unmapped || []).length, '未识别上报值');
+
+    const body = rows.map((r) => {
+      const res = Object.keys(r.by_resource || {})
+        .sort((a, b) => r.by_resource[b] - r.by_resource[a])
+        .map((k) => (RES_LABEL[k] || k) + '×' + r.by_resource[k]).join('　') || '—';
+      const dm = Number(r.demand_total || 0);
+      const demandCell = dm > 0
+        ? '<span class="chip warn">' + esc(dm) + ' 次失败</span>'
+        : '<span class="note">—</span>';
+      const aliases = (r.aliases || []);
+      const alias = aliases.length > 1
+        ? '<br><span class="note">合并 ' + esc(aliases.join(' / ')) + '</span>' : '';
+      return '<tr><td>' + esc(r.name) + alias + '</td>'
+        + '<td class="real">' + esc(r.total) + '</td>'
+        + '<td class="real">' + esc(r.ok) + '</td>'
+        + '<td class="real">≥' + esc(r.accounts) + '</td>'
+        + '<td class="real">' + esc(fmtTs(r.last_ts)) + '</td>'
+        + '<td>' + demandCell + '</td>'
+        + '<td>' + esc(res) + '</td></tr>';
+    });
+
+    let html = table(
+      ['平台', '用量', '成功回写', '涉及账号', '最近一次', '失败需求', '资源分布'],
+      body, '窗口内没有三端用量记录 —— 三端都没人真正用上功能，或配额消耗没上报上来。');
+
+    const un = d.unmapped || [];
+    if (un.length) {
+      html += '<p class="note" style="margin-top:14px">下面这些上报值识别不出是哪个平台'
+        + '（示例域名 / 本站域名 / 不认识的域名），<b>没有并进任何平台</b>'
+        + '，列出来是为了能回头修上报口径：</p>';
+      html += table(
+        ['原始上报值', '条数', '最近一次'],
+        un.map((r) => '<tr><td>' + esc(((r.aliases || []).join(' / ')) || r.name) + '</td>'
+          + '<td class="real">' + esc(r.total) + '</td>'
+          + '<td class="real">' + esc(fmtTs(r.last_ts)) + '</td></tr>'),
+        '');
+    }
+    $('usageBox').innerHTML = html;
+    $('usageMeta').textContent =
+      (d.stale ? '⚠️ 授权中心暂时不可达，下面是上次成功拉取的结果'
+        + (d.note ? '（' + d.note + '）' : '') + '。' : '')
+      + '统计窗口 ' + (d.days || 30) + ' 天 · 生成于 ' + (d.generated_at || '—')
+      + ' · 来源 ' + (d.source || '—')
+      + ' · 「成功回写」只算明确回写了成功的记录，老数据可能没回写，偏低不等于失败。';
+  }
+
   function renderQuota(stats) {
     // stats.by_kind 里 quota_block_<resource> 就是会员墙拦截计数（2026-11-01 起才记）
     const byKind = (stats && stats.by_kind) || {};
@@ -472,6 +548,12 @@
       api('/api/admin/stats').then(renderQuota)
         .catch((e) => { $('quotaBody').innerHTML =
           '<p class="err">拦截统计加载失败：' + esc(e.message) + '</p>'; }),
+      api('/api/admin/platform-usage?days=30').then(renderUsage)
+        .catch((e) => {
+          $('usageKpis').innerHTML = '';
+          $('usageBox').innerHTML =
+            '<p class="err">三端用量加载失败：' + esc(e.message) + '</p>';
+        }),
     ];
     await Promise.all(jobs);
   }
