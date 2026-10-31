@@ -141,7 +141,7 @@ _INSTALLER_FILES: dict[str, Path] = {
                       or "/opt/vdl-update/VideoDownloader.app.zip"),
     # 2026-10-30 恢复：R2 探测不达时的本机回退（安全网，保证 CF 侧异常也下得到）
     "windows": Path(os.environ.get("VDL_INSTALLER_WINDOWS")
-                    or "/opt/vdl-update/VideoDownloader-Setup-1.1.06.exe"),
+                    or "/opt/vdl-update/VideoDownloader-Setup-1.1.07.exe"),
 }
 
 # 🔴 2026-10-18：Windows 安装包暂时不可用（用户反馈装上后跑不起来），先把该平台
@@ -168,7 +168,7 @@ _R2_INSTALLER_URLS: dict[str, str] = {
     "macos-zip": os.environ.get("VDL_R2_INSTALLER_MACOS_ZIP")
                  or "https://download.hanyuxz.top/VideoDownloader.app.zip",
     "windows": os.environ.get("VDL_R2_INSTALLER_WINDOWS")
-               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.1.06.exe",
+               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.1.07.exe",
 }
 
 # 安装包媒体类型按扩展名取（DMG≠ZIP≠EXE，写死 zip 会让浏览器把 dmg 也当 zip 处理）。
