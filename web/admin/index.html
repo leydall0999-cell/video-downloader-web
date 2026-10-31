@@ -42,6 +42,23 @@
   body.readonly input, body.readonly select { opacity:.55; cursor:not-allowed; }
   body.readonly button { opacity:.5; cursor:not-allowed; }
   #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; z-index:9; }
+  /* 平台健康 / 派单（2026-11-01）：状态徽章 + KPI + 证据折叠 */
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); white-space:nowrap; }
+  .chip.bad { color:var(--red); border-color:rgba(255,107,107,.5); background:rgba(255,107,107,.1); }
+  .chip.warn { color:var(--amber); border-color:rgba(255,184,77,.5); background:rgba(255,184,77,.1); }
+  .chip.good { color:var(--green); border-color:rgba(66,211,146,.5); background:rgba(66,211,146,.1); }
+  .chip.mute { color:var(--muted); }
+  .kpis { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:12px; }
+  .kpi { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 16px; min-width:104px; }
+  .kpi b { display:block; font-size:20px; font-weight:600; line-height:1.3; }
+  .kpi span { color:var(--muted); font-size:12px; }
+  details.ev { margin-top:6px; }
+  details.ev summary { cursor:pointer; color:var(--accent); font-size:12px; }
+  details.ev pre { white-space:pre-wrap; word-break:break-all; color:var(--muted); font-size:12px; margin:6px 0 0; font-family:var(--font-mono,monospace); }
+  details.sub { margin-top:16px; }
+  details.sub > summary { cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0; }
+  .scroll { max-height:400px; overflow:auto; }
+  .sub-h { color:var(--muted); font-size:12px; margin:14px 0 6px; }
 </style>
 </head>
 <body>
@@ -105,6 +122,35 @@
       <label><input type="checkbox" id="trialMembersToo"> 会员也享受（默认不给，保住付费纪律）</label>
     </div>
     <p class="note" id="trialNote"></p>
+  </section>
+
+  <section class="panel" id="healthPanel" style="display:none">
+    <h2><span class="dot"></span>平台健康 · 自动修复派单</h2>
+    <p class="note">
+      每天 4:30 自动巡检：判出 <b>broken</b>（样本还活着但全部解析失败）会先自动升级 yt-dlp
+      并用独立子进程复测，升版后仍失败才落到下面的派单里 —— 派单 = <b>真的需要人动手</b>的清单。
+    </p>
+    <div class="kpis" id="healthKpis"></div>
+    <p class="note" id="healthMeta"></p>
+    <div id="ticketBox"></div>
+    <details class="sub">
+      <summary>解析成功遥测（谁真的被用户解析成功了）</summary>
+      <div id="succBox"></div>
+    </details>
+    <details class="sub">
+      <summary>解析需求榜（用户要但没拿到，按域名聚合）</summary>
+      <div id="demandBox"></div>
+    </details>
+  </section>
+
+  <section class="panel" id="quotaPanel" style="display:none">
+    <h2><span class="dot"></span>会员墙拦截</h2>
+    <p class="note">
+      用户被配额拦住时唯一的落点。它既不进需求库、也不进授权中心，
+      所以这里是看「多少人卡在配额上」的唯一窗口 —— 转化瓶颈通常就在这个数上。
+    </p>
+    <div class="kpis" id="quotaKpis"></div>
+    <div id="quotaBody"></div>
   </section>
 </div>
 
@@ -188,6 +234,207 @@
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // ---------------- 平台健康 / 派单 / 会员墙拦截（2026-11-01） ----------------
+  // 三块数据都来自只读端点，管理员（非超管）也能看；任何一块失败只影响自己那一块，
+  // 不能把整个后台拖挂 —— 计费页是主用途，健康面板是诊断用途。
+  const STATUS_CHIP = {
+    broken: ['bad', '需修复'],
+    needs_manual: ['warn', '需人工'],
+    sample_invalid: ['mute', '样本失效'],
+    degraded: ['warn', '部分可用'],
+    repaired_pending_restart: ['good', '已修·待重启'],
+    demand_only: ['mute', '仅需求·无成功'],
+    healthy: ['good', '健康'],
+    no_sample: ['mute', '无样本'],
+    unknown: ['mute', '未知'],
+    // 派单状态（repair_tickets.status）—— 都是「升版这招已用尽」的结论，必须人看
+    not_fixed: ['bad', '升版无效'],
+    already_latest: ['warn', '已是最新'],
+    update_failed: ['bad', '升版失败'],
+    regressed: ['bad', '升版后更差'],
+    regressed_other: ['bad', '牵连其它平台'],
+  };
+  // 配额资源键 → 人话（后端资源名是 download/cloud_drive/...）
+  const RES_LABEL = {
+    download: '视频下载',
+    cloud_drive: '网盘下载',
+    matting: '图片抠图',
+    dewatermark: '去水印',
+    commentary: '视频解说',
+    subtitle: '字幕提取',
+  };
+  // 需求榜分类 → 人话（见 resolve_demand.py 顶部口径说明）
+  const CAT_LABEL = {
+    pending_extractor: '待补提取器',
+    unsupported_platform: '不支持的平台',
+    login_wall: '要登录态',
+    anti_bot: '被风控拦',
+    geo_or_paywall: '地区/付费墙',
+    content_gone: '内容已删',
+  };
+  function chip(status) {
+    const s = STATUS_CHIP[status] || ['mute', status || '—'];
+    return '<span class="chip ' + s[0] + '">' + esc(s[1]) + '</span>';
+  }
+  function fmtTs(sec) {
+    if (!sec) return '—';
+    const d = new Date(Number(sec) * 1000);
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+      + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function table(headers, rows, emptyText) {
+    if (!rows.length) return '<p class="empty">' + esc(emptyText) + '</p>';
+    return '<div class="scroll"><table><thead><tr>'
+      + headers.map((h) => '<th>' + esc(h) + '</th>').join('')
+      + '</tr></thead><tbody>' + rows.join('') + '</tbody></table></div>';
+  }
+  function kpi(n, label) {
+    return '<div class="kpi"><b>' + esc(n) + '</b><span>' + esc(label) + '</span></div>';
+  }
+
+  function renderTickets(tickets) {
+    // 派单按时间倒序：最新的问题在最上面
+    const list = (tickets || []).slice().sort((a, b) =>
+      String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    if (!list.length) {
+      $('ticketBox').innerHTML =
+        '<p class="empty">暂无派单：所有平台要么正常，要么已由升版自动修好。</p>';
+      return;
+    }
+    const rows = list.map((t) => {
+      let ev = '';
+      const arr = t.evidence || [];
+      if (arr.length) {
+        ev = '<details class="ev"><summary>证据 ' + arr.length + ' 条</summary><pre>'
+          + arr.map((e) => esc('[' + (e.category || '?') + '] ' + (e.message || '')
+            + (e.hint ? '\n  ' + e.hint : ''))).join('\n\n')
+          + '</pre></details>';
+      }
+      const ver = (t.ytdlp_before || '?') === (t.ytdlp_after || '?')
+        ? (t.ytdlp_before || '?')
+        : (t.ytdlp_before || '?') + ' → ' + (t.ytdlp_after || '?');
+      // name 与 platform 相同时不重复显示（很多站两者一样，比如 lespark）
+      const pname = t.name || t.platform || '—';
+      const psub = (t.name && t.platform && t.name !== t.platform)
+        ? '<br><span class="note">' + esc(t.platform) + '</span>' : '';
+      return '<tr>'
+        + '<td>' + esc(pname) + psub + ev + '</td>'
+        + '<td>' + chip(t.status) + '<br><span class="note">' + esc(t.status || '') + '</span></td>'
+        + '<td>' + esc(t.root_cause_label || t.root_cause || '—') + '</td>'
+        + '<td class="where">' + esc(t.suggested_action || '—') + '</td>'
+        + '<td class="real">' + esc(ver) + '</td>'
+        + '<td class="real">' + esc(t.created_at || '') + '</td>'
+        + '</tr>';
+    });
+    $('ticketBox').innerHTML = table(
+      ['平台', '状态', '根因', '建议动作', 'yt-dlp', '派单时间'], rows, '暂无派单');
+  }
+
+  function renderHealth(d) {
+    const check = d.check || null;
+    const s = (check && check.summary) || {};
+    const counts = s.counts || {};
+    let kpis = '';
+    kpis += kpi(s.total != null ? s.total : '—', '巡检平台数');
+    kpis += kpi(s.actionable != null ? s.actionable : 0, '需行动');
+    kpis += kpi(counts.broken || 0, 'broken');
+    kpis += kpi(counts.needs_manual || 0, '需人工');
+    kpis += kpi(counts.repaired_pending_restart || 0, '已修待重启');
+    kpis += kpi((d.repair_tickets || []).length, '未结派单');
+    $('healthKpis').innerHTML = kpis;
+
+    if (!check) {
+      $('healthMeta').textContent =
+        '还没跑过巡检（或健康表不在数据目录里）。巡检由服务器每日 4:30 定时执行，'
+        + '也可以在服务器上手动跑一次。';
+    } else {
+      const auto = check.autorepair_enabled ? '自动修复：开启' : '自动修复：关闭';
+      $('healthMeta').textContent = '最近巡检 ' + (check.generated_at || '—')
+        + '（' + auto + '）· 成功遥测 ' + (check.telemetry_days || '—') + ' 天窗口'
+        + ' · 健康表 ' + (check._file || '');
+    }
+    renderTickets(d.repair_tickets);
+
+    // 成功遥测：只到域名粒度，没有 URL（隐私口径写在接口注释里）
+    const succ = d.success || [];
+    $('succBox').innerHTML = table(
+      ['域名', '成功天数', '成功次数', '最近一次', '平台 key'],
+      succ.map((r) => '<tr><td>' + esc(r.host) + '</td>'
+        + '<td>' + esc(r.days_count) + '</td>'
+        + '<td>' + esc(r.total) + '</td>'
+        + '<td class="real">' + esc(fmtTs(r.last_ts)) + '</td>'
+        + '<td class="real">' + esc((r.keys || []).join(', ')) + '</td></tr>'),
+      '窗口内没有成功记录（要么没人用，要么解析全挂了）。');
+
+    // 需求榜：有需求但完全没成功的域名，值得优先排查
+    const succHosts = new Set((succ || []).map((r) => r.host));
+    const dem = d.demand || [];
+    $('demandBox').innerHTML = table(
+      ['域名', '覆盖周数', '需求次数', '最近一次', '分类', '有无成功'],
+      dem.map((r) => {
+        const cats = r.categories || {};
+        const catTxt = Object.keys(cats)
+          .map((k) => (CAT_LABEL[k] || k) + ' ×' + cats[k]).join('　');
+        const never = succHosts.has(r.host)
+          ? '<span class="chip good">有</span>'
+          : '<span class="chip bad">从未成功</span>';
+        const url = r.last_url
+          ? '<details class="ev"><summary>最近一条</summary><pre>' + esc(r.last_url) + '</pre></details>'
+          : '';
+        return '<tr><td>' + esc(r.host) + url + '</td>'
+          + '<td>' + esc(r.weeks_count) + '</td>'
+          + '<td>' + esc(r.total) + '</td>'
+          + '<td class="real">' + esc(fmtTs(r.last_ts)) + '</td>'
+          + '<td class="real">' + esc(catTxt) + '</td>'
+          + '<td>' + never + '</td></tr>';
+      }),
+      '最近 12 周没有未满足的解析需求。');
+  }
+
+  function renderQuota(stats) {
+    // stats.by_kind 里 quota_block_<resource> 就是会员墙拦截计数（2026-11-01 起才记）
+    const byKind = (stats && stats.by_kind) || {};
+    const keys = Object.keys(byKind).filter((k) => k.indexOf('quota_block_') === 0);
+    if (!keys.length) {
+      $('quotaKpis').innerHTML = '';
+      $('quotaBody').innerHTML = '<p class="empty">还没有拦截记录'
+        + '（这项统计从 2026-11-01 才开始记，之前的历史没有）。</p>';
+      return;
+    }
+    keys.sort((a, b) => Number(byKind[b]) - Number(byKind[a]));
+    const totalBlock = keys.reduce((n, k) => n + Number(byKind[k] || 0), 0);
+    const all = Number((stats && stats.total) || 0);
+    $('quotaKpis').innerHTML = kpi(totalBlock, '被拦截总次数')
+      + kpi(all ? totalBlock + ' / ' + all : '—', '拦截 ÷ 全部事件')
+      + kpi(keys.length, '受限资源数');
+    $('quotaBody').innerHTML = table(
+      ['资源', '被拦截次数'],
+      keys.map((k) => {
+        const res = k.replace('quota_block_', '');
+        return '<tr><td>' + esc(RES_LABEL[res] || res)
+          + '<br><span class="note">' + esc(k) + '</span></td>'
+          + '<td>' + esc(byKind[k]) + '</td></tr>';
+      }),
+      '没有拦截记录');
+  }
+
+  async function loadInsights() {
+    // 两块互不依赖，各拉各的；一个挂了另一个照样出数。
+    const jobs = [
+      api('/api/admin/platform-health').then(renderHealth)
+        .catch((e) => {
+          $('healthKpis').innerHTML = '';
+          $('healthMeta').textContent = '平台健康数据加载失败：' + e.message;
+          $('ticketBox').innerHTML = '';
+        }),
+      api('/api/admin/stats').then(renderQuota)
+        .catch((e) => { $('quotaBody').innerHTML =
+          '<p class="err">拦截统计加载失败：' + esc(e.message) + '</p>'; }),
+    ];
+    await Promise.all(jobs);
+  }
+
   async function load() {
     applyRole(await fetchRole());
     const d = await api('/api/admin/ai/credit-costs');
@@ -210,7 +457,11 @@
       + '⚠️ 换个注册账号仍能重新薅一次 —— 真要收紧得上设备指纹或授权中心去重。';
     $('main').style.display = '';
     $('trialPanel').style.display = '';
+    $('healthPanel').style.display = '';
+    $('quotaPanel').style.display = '';
     $('gate').style.display = 'none';
+    // 诊断数据旁路加载：不 await —— 健康/统计端点挂了也必须让计费页照常可用
+    loadInsights().catch(() => {});
   }
 
   async function save() {
