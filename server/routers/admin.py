@@ -390,18 +390,29 @@ def admin_platform_health(days: int = 30, request: Request = None) -> dict[str, 
     # 而本文件在 server/routers/ ⇒ ECS 上是 parents[2]/data，本地开发是
     # parents[1]/data。两处都探一下，取第一个存在的。
     check = None
+    tickets = []
     _here = Path(__file__).resolve()
-    for _cand in (_here.parents[2] / "data" / "platform_health.json",
-                  _here.parents[1] / "data" / "platform_health.json"):
+    for _root in (_here.parents[2], _here.parents[1]):
+        _cand = _root / "data" / "platform_health.json"
         try:
-            if _cand.is_file():
+            if check is None and _cand.is_file():
                 check = _json.loads(_cand.read_text(encoding="utf-8"))
                 check["_file"] = str(_cand)
-                break
         except Exception:  # noqa: BLE001
-            continue
+            pass
+        # 自动修复的派单（2026-11-01）：只有「升版也修不好」的才进这里，
+        # 是真正需要人动手的清单，管理员必须看得见。
+        _tk = _root / "data" / "repair_tickets.json"
+        try:
+            if not tickets and _tk.is_file():
+                _d = _json.loads(_tk.read_text(encoding="utf-8"))
+                if isinstance(_d, list):
+                    tickets = _d[-50:]
+        except Exception:  # noqa: BLE001
+            pass
     return {"ok": True, "data_dir": str(base), "days": int(days or 30),
-            "success": succ, "demand": dem, "check": check}
+            "success": succ, "demand": dem, "check": check,
+            "repair_tickets": tickets}
 
 
 @router.get("/api/admin/config")

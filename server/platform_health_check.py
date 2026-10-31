@@ -21,10 +21,22 @@
   healthy        样本全通，或（无样本但）近期有成功遥测
   degraded       样本部分通
   sample_invalid 样本全挂且样本自身也死了（维护问题，非平台坏）
-  broken         样本全挂且样本仍活着 ⇒ 平台真的坏了
+  broken         样本全挂且样本仍活着 ⇒ 平台真的坏了（会触发自动修复）
+  repaired_pending_restart  自动升 yt-dlp 后复测已通过，但线上进程仍在跑旧版，
+                 需重启 vdl-web 才真正生效
+  needs_manual   升版无效且根因明确（登录墙/付费/地区/缺提取器）⇒ 人力才可能解决
   demand_only    无样本、无成功遥测，但有用户需求 ⇒ 有人要却从没成功过，值得排查
   unknown        三源皆无证据
   no_sample      无样本（保留，供样本库补齐进度用）
+
+自动修复（2026-11-01 接入，见 platform_autorepair）：
+  仅对 `broken` 触发 —— 升 yt-dlp（`ydlp_update.update()`）→ **子进程**复测
+  （新进程 bootstrap 才用得到新版；运行中进程装完仍是旧的）→ 有效则标
+  `repaired_pending_restart`（**不自动重启生产服务**），无效则按根因落派单
+  `data/repair_tickets.json`。升版是全局动作，故成功后会回归校验其它平台样本，
+  一旦「修好 A 弄坏 B」判 `regressed_other` 并建议回滚。
+  `degraded` 不触发：实测多为内容级限制（B站某视频 412），升版无用且白担风险。
+  环境变量 VDL_HEALTH_AUTOREPAIR=0 可关闭自动修复。
 
 用法：
     python platform_health_check.py                 # 全量巡检
@@ -64,6 +76,20 @@ try:
 except Exception:  # noqa: BLE001
     platform_telemetry = None
     resolve_demand = None
+
+# 修复层（2026-11-01）：判出 broken 后自动升 yt-dlp + 子进程复测。
+# 导入失败只降级为「只检测不修复」，绝不让巡检整体挂掉。
+try:
+    for _p in (_HERE, os.path.join(_HERE, "server")):
+        if os.path.isfile(os.path.join(_p, "platform_autorepair.py")) and _p not in sys.path:
+            sys.path.insert(0, _p)
+            break
+    import platform_autorepair
+except Exception:  # noqa: BLE001
+    platform_autorepair = None
+
+# 自动修复开关：默认开启（用户要求接上），可 VDL_HEALTH_AUTOREPAIR=0 关闭
+AUTOREPAIR = os.environ.get("VDL_HEALTH_AUTOREPAIR", "1").strip() not in ("0", "false", "no")
 
 
 def _http(url: str, timeout: int = 20, data: bytes | None = None) -> tuple[int, str]:
@@ -247,22 +273,69 @@ def main() -> int:
                       "source": "sample", "ok": ok_n, "total": len(results),
                       "evidence": ev, "results": results})
 
+    # ---- 自动修复层（2026-11-01）----
+    # 只对 broken 触发：degraded 实测多为**内容级**限制（如 B站某视频 412 地区/会员），
+    # 升版对它无效，却要承担「新版弄坏别的平台」的全局风险 —— 不值得。
+    # broken = 样本仍活着但全挂，最符合「提取器老化」特征，正是升版能治的那类。
+    repair_log: list[dict] = []
+    if AUTOREPAIR and platform_autorepair is not None:
+        broken = [it for it in items if it["status"] == "broken"]
+        if broken:
+            # 回归校验池：其它平台的样本（升版是整进程共用，必须防「修好 A 弄坏 B」）
+            reg: dict[str, list[str]] = {}
+            broken_keys = {b["platform"] for b in broken}
+            for k, c in samples.items():
+                if not isinstance(c, dict) or k in broken_keys:
+                    continue
+                u = _samples_for(c, 1)
+                if u:
+                    reg[k] = u[:1]
+            for it in broken:
+                urls = [r["url"] for r in (it.get("results") or [])]
+                if not urls:
+                    continue
+                rep = platform_autorepair.repair_platform(
+                    it["platform"], it.get("name") or it["platform"], urls,
+                    baseline_ok=int(it.get("ok") or 0), regression_urls=reg,
+                    log=lambda m: print(m))
+                it["repair"] = rep
+                repair_log.append(rep)
+                rs = rep.get("status")
+                if rs in ("fixed", "improved"):
+                    # 修好了，但线上进程还在跑旧 yt-dlp ⇒ 必须重启才生效
+                    it["status"] = "repaired_pending_restart"
+                elif rs == "already_latest" and (
+                        (rep.get("root_cause") or {}).get("code")
+                        in ("login_wall", "geo_or_paywall", "no_extractor",
+                            "content_gone", "anti_bot")):
+                    # 升版修不了、且根因明确不在版本 ⇒ 归「需人工」，不再天天当 broken 报
+                    it["status"] = "needs_manual"
+                # 其余（not_fixed / regressed / update_failed）保持 broken，且已落派单
+
     # 排序：**需要行动的排前面**，无证据（=无真实流量）的沉底。
     # 不排序的话，unknown 会淹没真正坏掉的平台——健康表的价值在于「先看什么」。
-    _RANK = {"broken": 0, "sample_invalid": 1, "degraded": 2, "demand_only": 3,
-             "healthy": 4, "no_sample": 5, "unknown": 6}
+    _RANK = {"broken": 0, "needs_manual": 1, "sample_invalid": 2, "degraded": 3,
+             "repaired_pending_restart": 4, "demand_only": 5, "healthy": 6,
+             "no_sample": 7, "unknown": 8}
     items.sort(key=lambda r: (_RANK.get(r["status"], 9), r["platform"]))
     counts: dict[str, int] = {}
     for it in items:
         counts[it["status"]] = counts.get(it["status"], 0) + 1
-    actionable = sum(counts.get(s, 0) for s in ("broken", "sample_invalid", "degraded", "demand_only"))
+    actionable = sum(counts.get(s, 0) for s in
+                     ("broken", "needs_manual", "sample_invalid", "degraded",
+                      "repaired_pending_restart", "demand_only"))
     out = {"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
            "endpoint": ENDPOINT, "telemetry_days": TELEMETRY_DAYS,
            "demand_days": DEMAND_DAYS, "data_dir": DATA_DIR,
            "telemetry_available": bool(succ), "demand_available": bool(dem),
+           "autorepair_enabled": bool(AUTOREPAIR and platform_autorepair is not None),
            "summary": {"total": len(items), "actionable": actionable,
                        "counts": counts,
-                       "no_evidence": counts.get("unknown", 0)},
+                       "no_evidence": counts.get("unknown", 0),
+                       "repaired_pending_restart": counts.get(
+                           "repaired_pending_restart", 0),
+                       "needs_manual": counts.get("needs_manual", 0)},
+           "repairs": repair_log,
            "items": items}
     try:
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
@@ -281,8 +354,12 @@ def main() -> int:
              " ".join("%s=%d" % (k, v) for k, v in sorted(
                  (s.get("counts") or {}).items(),
                  key=lambda kv: kv[0]) if k in
-                 ("broken", "sample_invalid", "degraded", "demand_only")) or "无",
+                 ("broken", "needs_manual", "sample_invalid", "degraded",
+                  "repaired_pending_restart", "demand_only")) or "无",
              s.get("no_evidence", 0)))
+    if out.get("autorepair_enabled") and repair_log:
+        print("自动修复：尝试 %d 个平台，需要重启生效 %d 个"
+              % (len(repair_log), s.get("repaired_pending_restart", 0)))
     for it in items:
         ev = it.get("evidence") or {}
         extra = ""
@@ -300,6 +377,13 @@ def main() -> int:
             if not r["ok"]:
                 print("      FAIL %s alive=%s %s"
                       % (r["url"][:60], r.get("sample_alive"), r["msg"][:90]))
+        rp = it.get("repair") or {}
+        if rp:
+            _rc = rp.get("root_cause") or {}
+            print("      REPAIR %s / 根因 %s：%s%s"
+                  % (rp.get("status"), _rc.get("code"), rp.get("note", ""),
+                     "  ⚠️需重启 vdl-web 才在线上生效"
+                     if rp.get("restart_required") else ""))
     print("-> %s" % OUT_PATH)
     return 0
 
