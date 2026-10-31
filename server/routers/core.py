@@ -14,6 +14,7 @@ from pathlib import Path as _Path
 
 import app
 import object_store
+import platform_telemetry
 from fastapi import APIRouter
 router = APIRouter()
 
@@ -173,7 +174,20 @@ async def resolve(payload: app.ResolveRequest, request: app.Request) -> dict:
         else:
             detail = f'解析超时（超过 {timeout} 秒）。常见原因：①视频本身受限（限免/会员专享/付费/地区限制，这类通常需登录 cookie 才能拿到真实流，请到右上角「高级选项」粘贴浏览器 Cookie 后重试）；②当前网络无法访问该平台（可尝试在「高级选项」设置代理）'
         raise app.HTTPException(status_code=504, detail=detail) from None
-    return {'url': url, 'platform': {'key': platform.key, 'name': platform.name}, 'video': app.downloader.summarize(info), 'qualities': app.downloader.build_quality_options(info), 'sources': []}
+    video_summary = app.downloader.summarize(info)
+    # 解析成功遥测（旁路，异常一律静默）：只落 host + 时间戳，**绝不记 URL**
+    # ——URL 可能含私密视频 ID / 分享者身份 / 带签名 token，判定「平台活着」
+    # 根本不需要知道用户具体看了哪条视频。
+    # 它与 resolve_demand（失败侧需求登记）合成完整平台健康度：有成功侧证据后，
+    # 「平台还活着吗」不再依赖样本 URL 库（样本采集实测才是最大成本）。
+    try:
+        if isinstance(video_summary, dict) and (
+                video_summary.get('title') or video_summary.get('qualities')
+                or video_summary.get('duration')):
+            platform_telemetry.record_success(host, getattr(platform, 'key', ''))
+    except Exception:
+        pass
+    return {'url': url, 'platform': {'key': platform.key, 'name': platform.name}, 'video': video_summary, 'qualities': app.downloader.build_quality_options(info), 'sources': []}
 
 
 @router.post('/api/playlist')

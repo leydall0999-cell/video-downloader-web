@@ -1,0 +1,197 @@
+{
+  "_comment": "平台巡检样本库。urls=固定样本（需真实可播）；discoverer=从公开 API 自动取当前真实视频（推荐，免维护）。urls 为空=待采集，巡检显示 no_sample。样本须真实可播，禁止占位/臆造链接。",
+  "bilibili": {
+    "name": "哔哩哔哩",
+    "discoverer": "bilibili_popular",
+    "hosts": [
+      "bilibili.com",
+      "b23.tv",
+      "bilibili.tv"
+    ]
+  },
+  "douyin": {
+    "name": "抖音",
+    "urls": [],
+    "hosts": [
+      "douyin.com",
+      "iesdouyin.com"
+    ]
+  },
+  "kuaishou": {
+    "name": "快手",
+    "urls": [],
+    "hosts": [
+      "kuaishou.com",
+      "chenzhongtech.com",
+      "gifshow.com"
+    ]
+  },
+  "xiaohongshu": {
+    "name": "小红书",
+    "urls": [],
+    "hosts": [
+      "xiaohongshu.com",
+      "xhslink.com",
+      "xhslink.cn"
+    ]
+  },
+  "weibo": {
+    "name": "微博",
+    "urls": [],
+    "hosts": [
+      "weibo.com",
+      "weibo.cn",
+      "video.weibo.com"
+    ]
+  },
+  "xigua": {
+    "name": "西瓜视频",
+    "urls": [],
+    "hosts": [
+      "ixigua.com"
+    ]
+  },
+  "acfun": {
+    "name": "AcFun",
+    "urls": [],
+    "hosts": [
+      "acfun.cn"
+    ]
+  },
+  "tencent": {
+    "name": "腾讯视频",
+    "urls": [],
+    "hosts": [
+      "v.qq.com"
+    ]
+  },
+  "youku": {
+    "name": "优酷",
+    "urls": [],
+    "hosts": [
+      "youku.com"
+    ]
+  },
+  "iqiyi": {
+    "name": "爱奇艺",
+    "urls": [],
+    "hosts": [
+      "iqiyi.com",
+      "iq.com",
+      "iqy.net",
+      "qy.net"
+    ]
+  },
+  "mgtv": {
+    "name": "芒果TV",
+    "urls": [],
+    "hosts": [
+      "mgtv.com",
+      "imgo.tv"
+    ]
+  },
+  "sohu": {
+    "name": "搜狐视频",
+    "urls": [],
+    "hosts": [
+      "tv.sohu.com",
+      "sohu.com"
+    ]
+  },
+  "zhihu": {
+    "name": "知乎",
+    "urls": [],
+    "hosts": [
+      "zhihu.com"
+    ]
+  },
+  "ximalaya": {
+    "name": "喜马拉雅",
+    "urls": [],
+    "hosts": [
+      "ximalaya.com"
+    ]
+  },
+  "netease": {
+    "name": "网易云音乐",
+    "urls": [],
+    "hosts": [
+      "music.163.com"
+    ]
+  },
+  "pearvideo": {
+    "name": "梨视频",
+    "urls": [],
+    "hosts": [
+      "pearvideo.com"
+    ]
+  },
+  "haokan": {
+    "name": "好看视频",
+    "urls": [],
+    "hosts": [
+      "haokan.baidu.com"
+    ]
+  },
+  "yangshipin": {
+    "name": "央视频",
+    "urls": [],
+    "hosts": [
+      "yangshipin.cn",
+      "cntv.cn",
+      "cctv.com"
+    ]
+  },
+  "bestv": {
+    "name": "百视TV",
+    "urls": [],
+    "hosts": [
+      "bestv.com.cn"
+    ]
+  },
+  "hongguo": {
+    "name": "红果短剧",
+    "urls": [],
+    "hosts": [
+      "hongguoduanju.com",
+      "novelquickapp.com"
+    ]
+  },
+  "xinpianchang": {
+    "name": "新片场",
+    "urls": [],
+    "hosts": [
+      "xinpianchang.com"
+    ]
+  },
+  "funshion": {
+    "name": "风行网",
+    "urls": [],
+    "hosts": [
+      "fun.tv"
+    ]
+  },
+  "movie1905": {
+    "name": "1905电影网",
+    "urls": [],
+    "hosts": [
+      "1905.com"
+    ]
+  },
+  "migu": {
+    "name": "咪咕视频",
+    "urls": [],
+    "hosts": [
+      "miguvideo.com",
+      "music.migu.cn",
+      "migu.cn"
+    ]
+  },
+  "nmwchxx": {
+    "name": "金牌影院",
+    "urls": [],
+    "hosts": [
+      "nmwchxx.com"
+    ]
+  }
+}
