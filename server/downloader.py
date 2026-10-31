@@ -1453,6 +1453,9 @@ _KNOWN_PLATFORM_HOSTS = {
     "youtube.com", "youtu.be", "twitch.tv", "twitter.com", "x.com",
     "vimeo.com", "facebook.com", "instagram.com", "weibo.com", "qq.com",
     "v.qq.com", "iqiyi.com", "youku.com", "chrqj.com", "pan.baidu.com",
+    # lespark.us（短剧/短视频，需登录态）、liblib.tv（AI 绘图分享，图片，需登录态）：
+    # 均为已知平台，贴进解析框不要当直链文件透传（走 VPS worker 解析）。
+    "lespark.us", "liblib.tv",
 }
 
 
@@ -4330,6 +4333,74 @@ def _finder_info(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
         "（在已登录微信的浏览器复制 channels.weixin.qq.com 的 Cookie 粘贴给运维即可）。",
         category="pending_extractor",
     )
+def _lespark_info(url: str) -> dict[str, Any]:
+    """lespark.us 短剧/短视频：需登录态，走 VPS worker（持久 profile 注入账号 Cookie）
+    真实浏览器拦截 tcvod.lespark.cn 签名 m3u8。构造成 yt-dlp 兼容 info dict。
+
+    ⚠️ 登录态来自 ECS 持久 profile（lespark_profile），由运维把账号 Cookie 灌入，
+    不依赖用户自带 Cookie；worker 未配置则诚实报错。
+    """
+    token = os.environ.get("VDL_COOKIE_REFILL_TOKEN") or os.environ.get("VDL_COOKIE_SYNC_TOKEN", "")
+    if not token:
+        raise ResolveError(
+            "lespark 解析服务未配置",
+            "lespark 依赖 VPS 解析节点，请配置 VDL_COOKIE_REFILL_TOKEN / VDL_COOKIE_SYNC_TOKEN。",
+        )
+    data = _call_vps_worker("lespark", url)
+    video_url = data.get("video_url") or ""
+    if not video_url:
+        raise ResolveError("lespark 解析失败", data.get("error") or "未获取到视频流")
+    return {
+        "id": data.get("video_id") or "",
+        "title": data.get("title") or "lespark视频",
+        "duration": data.get("duration"),
+        "thumbnail": data.get("thumbnail") or "",
+        "webpage_url": data.get("webpage_url") or url,
+        "extractor_key": "Lespark",
+        "extractor": "lespark",
+        "ext": data.get("ext") or "m3u8",
+        "direct": True,
+        "url": video_url,
+        "protocol": "https",
+        "http_headers": {"User-Agent": _DOUYIN_UA, "Referer": "https://www.lespark.us/"},
+    }
+
+
+def _liblib_info(url: str) -> dict[str, Any]:
+    """liblib.tv AI 绘图分享：走 VPS worker（持久 profile 注入账号 Cookie）解析分享
+    画布里的成图直链。liblib 是图片而非视频，下游下载管线按单图直链处理（images
+    字段保留全部成图，供前端多图下载，待 UI 支持）。
+
+    ⚠️ 登录态来自 ECS 持久 profile（liblib_profile），由运维把账号 Cookie 灌入。
+    """
+    token = os.environ.get("VDL_COOKIE_REFILL_TOKEN") or os.environ.get("VDL_COOKIE_SYNC_TOKEN", "")
+    if not token:
+        raise ResolveError(
+            "liblib 解析服务未配置",
+            "liblib 依赖 VPS 解析节点，请配置 VDL_COOKIE_REFILL_TOKEN / VDL_COOKIE_SYNC_TOKEN。",
+        )
+    data = _call_vps_worker("liblib", url)
+    images = data.get("images") or []
+    first = images[0] if images else (data.get("video_url") or "")
+    if not first:
+        raise ResolveError("liblib 分享页未解析到图片", data.get("error") or "分享链接可能已失效或需登录")
+    return {
+        "id": data.get("video_id") or "",
+        "title": data.get("title") or "liblib分享",
+        "duration": None,
+        "thumbnail": data.get("thumbnail") or first,
+        "webpage_url": data.get("webpage_url") or url,
+        "extractor_key": "Liblib",
+        "extractor": "liblib",
+        "ext": data.get("ext") or "jpg",
+        "direct": True,
+        "url": first,
+        "protocol": "https",
+        "images": images,
+        "http_headers": {"User-Agent": _DOUYIN_UA, "Referer": "https://www.liblib.tv/"},
+    }
+
+
 def _yy_info(url: str, proxy: str = "") -> dict[str, Any]:
     """YY 直播（yy.com / h.yy.com）：直播流地址需 App 端签名，公开 web 接口拿不到直链。
     best-effort：尝试从播放页/公开 API 提取，失败明确告知。
@@ -4532,6 +4603,12 @@ def probe(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
     # 微信视频号：weixin.qq.com/sph/* 短链 或 channels.weixin.qq.com 直链
     if ("weixin.qq.com" in (host or "")) or ("channels.weixin.qq.com" in (host or "")):
         return _finder_info(url, cookie=cookie, proxy=proxy)
+    # lespark.us：短剧/短视频，需登录态，走 VPS worker 拦截签名 m3u8
+    if "lespark.us" in (host or ""):
+        return _lespark_info(url)
+    # liblib.tv：AI 绘图分享（图片），需登录态，走 VPS worker 解析成图直链
+    if "liblib.tv" in (host or ""):
+        return _liblib_info(url)
     if "yy.com" in (host or ""):
         return _yy_info(url, proxy=proxy)
     # Disney+ Hotstar / KinoPoisk：yt-dlp 已有提取器，显式放行走末尾通用解析，
@@ -5888,6 +5965,12 @@ def _run_once(task: DownloadTask, store: TaskStore, quality_key: str, cookie: st
             elif ("weixin.qq.com" in (_task_host or "")) or ("channels.weixin.qq.com" in (_task_host or "")):
                 # 微信视频号：必须微信登录态，用户自带 Cookie 优先，共享池兜底
                 info = _finder_info(task.url, cookie=cookie)
+            elif "lespark.us" in (_task_host or ""):
+                # lespark.us：短剧/短视频，VPS worker 拦截签名 m3u8
+                info = _lespark_info(task.url)
+            elif "liblib.tv" in (_task_host or ""):
+                # liblib.tv：AI 绘图分享（图片），VPS worker 解析成图直链
+                info = _liblib_info(task.url)
             elif _is_youtube_host(_task_host):
                 # YouTube：自动降级（免 Cookie + PO Token → Cookie 源自动切换）
                 info = _resolve_youtube(task.url, user_cookie=cookie, proxy=effective_proxy)
