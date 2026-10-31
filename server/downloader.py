@@ -4410,6 +4410,22 @@ def probe(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
             "专辑请使用「歌单 / 专辑下载」功能：粘贴链接后选择专辑模式即可整批下载；"
             "下载单个音频请打开具体集数的播放页链接。",
         )
+    # 网盘分享链接：用户把百度网盘/夸克等分享链贴进视频解析框（2026-10-31 需求榜
+    # 9 条里 3 条是这种，全部记成了 unsupported_platform 死路）。「下载到本地」是
+    # 网盘模块的活，解析框给精准引导而非笼统的「暂不支持」，把死路变活路。
+    _pan_hosts = (
+        "pan.baidu.com", "aliyundrive.com", "alipan.com", "quark.cn",
+        "115.com", "115cdn.com", "anxia.com", "pan.xunlei.com",
+        "cloud.189.cn", "caiyun.139.com", "weiyun.com", "123pan.com",
+        "lanzou", "lanzn",
+    )
+    if _probe_host and any(_p in _probe_host for _p in _pan_hosts):
+        raise ResolveError(
+            "这是网盘分享链接，不是视频播放页",
+            "网盘文件请使用「网盘」功能：切换到「网盘」页，粘贴这条分享链接"
+            "（有提取码就填上）即可把文件下载到本地。\n"
+            "本解析框只处理 YouTube / B站 / 抖音等平台的视频播放页链接。",
+        )
     url = _norm_for_check
     # 优酷链接归一化：当前主流为 www.youku.com，而 yt-dlp 内置 YoukuIE 仅匹配
     # v/play/player.youku.com，否则会落 generic 提取 → Unsupported URL（pending_extractor）。
