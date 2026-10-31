@@ -8,7 +8,8 @@
   1. 正常路径：返回各平台 size / updated / version，字段齐全；
   2. 缓存：TTL 内只 HEAD 一次（避免每访问一次页面就打一次 R2）；
   3. 异常路径：HEAD 失败时返回 size=0 而不是 500（页面回退静态文案）；
-  4. 已关闭的平台不出现（Windows 目前关闭，别把装不了的包又暴露出去）。
+  4. 已关闭的平台不出现（开关在 extension.py 的 `_INSTALLER_ENABLED`；
+     Windows 于 2026-10-18 关闭、2026-10-31 用 CI 官方产物修复后重开）。
 """
 import os
 import sys
@@ -50,8 +51,10 @@ def test_meta_reports_size_and_version(monkeypatch):
     assert mac["size"] == 308385889
     assert mac["version"] == "1.0.97"
     assert mac["updated"] == "2026-10-27"
-    # macos 与 macos-zip 各 HEAD 一次
-    assert len(calls) == 2
+    # 每个**开放**的平台各 HEAD 一次（windows 2026-10-31 重开 → 现为 3 次）
+    enabled = [p for p in ("macos", "macos-zip", "windows")
+               if ext._INSTALLER_ENABLED.get(p, True)]
+    assert len(calls) == len(enabled), f"应 HEAD {len(enabled)} 次，实际 {calls}"
 
 
 def test_meta_is_cached_within_ttl(monkeypatch):

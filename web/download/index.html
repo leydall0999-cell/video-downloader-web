@@ -79,18 +79,20 @@
           </div>
         </details>
       </div>
-      <!-- 🔴 2026-10-18：Windows 安装包暂不可用（用户反馈装不上），入口关闭。
-           恢复步骤三处一起改（守卫读同一张开关表，漏改任一边都会红）：
-           ① extension.py 的 _INSTALLER_ENABLED["windows"] 改回 True
-           ② 本卡去掉 dl-card-soon、还原成可点按钮（href=/download/installer?p=windows，
-              带 target=_blank 与 rel=noopener，文案「下载 Windows」）
-           ③ 补回直连兜底锚点（地址取 _R2_INSTALLER_URLS["windows"]）
+      <!-- 2026-10-30：Windows 安装包恢复下载（2026-10-18 因「一开下载连弹 aria2c 黑窗」
+           下架，该问题由 win_no_window 补丁修复，CI 有真机断言）。
+           安装包托管 R2；/download/installer?p=windows 302 到 R2，R2 不可达时回退 ECS 本机
+           文件（_INSTALLER_FILES["windows"]）。三处开关必须一致：本卡可点按钮 + 直连锚点
+           + extension.py 的 _INSTALLER_ENABLED["windows"]=True，漏改任一边守卫会红。
            注：注释里不写完整锚点标签，避免守卫的 <a> 正则把注释当成真链接。 -->
-      <div class="dl-card dl-card-soon">
+      <div class="dl-card">
         <div class="dl-ico">🪟</div>
         <h3>Windows</h3>
-        <p>需 Windows 10 / 11（64 位）。</p>
-        <span class="btn btn-block btn-soon">加急修复中，敬待开放</span>
+        <p>安装程序（EXE） · <span data-dl-size="windows">288 MB</span> · 需 Windows 10 / 11（64 位）。</p>
+        <p class="dl-ver" hidden><span data-dl-ver="windows"></span></p>
+        <a class="btn btn-block btn-primary" href="/download/installer?p=windows" target="_blank" rel="noopener">下载 Windows</a>
+        <p class="dl-note" style="margin-top:.6rem">双击安装，一路「下一步」即可，无需另装 Python、无需配置环境。首次运行 SmartScreen 可能提示「Windows 已保护你的电脑」（尚未办理代码签名），点「更多信息 → 仍要运行」继续即可。</p>
+        <p class="dl-note" style="margin-top:.4rem">点了没反应？改用<a href="https://download.hanyuxz.top/VideoDownloader-Setup-1.1.06.exe" target="_blank" rel="noopener">直连地址下载</a>（同一个文件，不经过本站跳转）。</p>
       </div>
       <div class="dl-card dl-card-soon">
         <div class="dl-ico">🤖</div>

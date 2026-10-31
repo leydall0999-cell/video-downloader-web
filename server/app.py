@@ -840,6 +840,108 @@ def _is_member_any(store) -> bool:
         return False
 
 
+# ---- 解析失败需求 → 授权中心（2026-10-31：网页版本机需求此前不上报，后台缺一角）---- #
+
+def _demand_cloud_token() -> str:
+    """网页版上报需求的身份 token（未登录/离线测试 → 空串，调用方静默跳过）。
+
+    worker 是多用户共享进程，但「解析需求榜」本质是站点热度统计，用**本机
+    member_store 的云端会话**上报即可——租户归属不重要，进池才算数。
+    🔴 走网页版既有的 `_cloud_quota_token`（cloud_session），不要用
+    `status()["account"]`（公开视图，不含 token）。
+    """
+    if "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("VDL_OFFLINE_TESTS"):
+        return ""
+    try:
+        return _cloud_quota_token(member_store)
+    except Exception:
+        return ""
+
+
+def report_demand_async(host: str, url: str = "", category: str = "unsupported_platform",
+                        ts: int = 0) -> None:
+    """解析失败需求上报授权中心（与本地落库并行；fire-and-forget，异常一律静默）。
+
+    ts=落库时间（resolve_demand.record_demand 传入）：云端按它落记录，历史 ts
+    （>1h 前）在中心侧放行 60s 节流 ⇒ 回填不会被拦。成功后推进本地水位，避免
+    启动回填把同一条重报。
+    """
+    h = str(host or "").strip().lower()[:120]
+    if not h or "/" in h or " " in h:
+        return
+    cat = str(category or "unsupported_platform")[:32]
+    if cat not in ("pending_extractor", "unsupported_platform"):
+        cat = "unsupported_platform"
+    try:
+        ts = int(ts or 0)
+    except (TypeError, ValueError):
+        ts = 0
+
+    def _run() -> None:
+        try:
+            token = _demand_cloud_token()
+            if not token:
+                return
+            import license_client
+            item: dict = {"host": h, "url": str(url or "")[:200], "category": cat}
+            if ts > 0:
+                item["ts"] = ts
+            license_client.demand_report_remote(token, [item])
+            if ts > 0:
+                import resolve_demand as _rd
+                _rd.mark_synced(ts)
+        except Exception:
+            pass
+
+    try:
+        threading.Thread(target=_run, daemon=True, name="vdl-demand-report").start()
+    except Exception:
+        pass
+
+
+def backfill_demand_to_center(max_batches: int = 20) -> dict:
+    """把本机解析需求日志里「云端没见过」的历史记录批量补报授权中心（回填）。
+
+    断点=resolve_demand 水位文件（已成功上报的最大 ts），只补水位之后的记录，
+    每批成功推进一次水位 ⇒ 重复调用/重启重跑都幂等。未登录/离线/测试环境跳过。
+    """
+    if "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("VDL_OFFLINE_TESTS"):
+        return {"ok": False, "reason": "offline_tests"}
+    try:
+        token = _demand_cloud_token()
+        if not token:
+            return {"ok": False, "reason": "not_logged_in"}
+        import license_client
+        import resolve_demand as _rd
+        pending = _rd.pending_for_sync()
+        if not pending:
+            return {"ok": True, "sent": 0}
+        sent = 0
+        for i in range(0, len(pending), _rd.SYNC_BATCH):
+            if sent and i >= max_batches * _rd.SYNC_BATCH:
+                break  # 单次最多 max_batches 批，剩余下次（水位保证断点续传）
+            batch = pending[i:i + _rd.SYNC_BATCH]
+            r = license_client.demand_report_remote(
+                token, [{"host": it["host"], "url": it["url"],
+                         "category": it["category"], "ts": it["ts"]} for it in batch])
+            if not isinstance(r, dict) or not r.get("ok"):
+                return {"ok": False, "reason": "cloud_rejected", "sent": sent}
+            sent += len(batch)
+            _rd.mark_synced(batch[-1]["ts"])
+        return {"ok": True, "sent": sent}
+    except Exception as e:  # noqa: BLE001 — 回填是旁路，绝不影响主流程
+        return {"ok": False, "reason": type(e).__name__}
+
+
+def _backfill_demand_in_background() -> None:
+    """后台线程跑一次回填（启动钩子 / 后台刷新都用它，不阻塞请求）。"""
+    try:
+        threading.Thread(target=backfill_demand_to_center, daemon=True,
+                         name="vdl-demand-backfill").start()
+    except Exception:
+        pass
+
+
 def _cloud_quota_limits() -> tuple[int, int]:
     """（终身, 每日 auto）上限，读 quota.py 常量做单一真源。"""
     try:
@@ -1949,6 +2051,14 @@ async def lifespan(_: FastAPI):
         ensure_superusers(allow_bootstrap=False)
     except Exception:
         logger.exception("确保超级用户失败")
+    # 解析需求上云（2026-10-31）：注册上报钩子 + 启动即回填一次历史积压。
+    # 此前网页版本机只写日志、不上报授权中心 ⇒ 桌面端后台「看全部」缺这一角。
+    try:
+        import resolve_demand as _demand_mod
+        _demand_mod.set_demand_reporter(report_demand_async)
+        _backfill_demand_in_background()
+    except Exception:
+        logger.exception("注册解析需求上云钩子失败")
     yield
     cleaner.cancel()
     if TORRENT_ENABLED:

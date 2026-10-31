@@ -139,6 +139,9 @@ _INSTALLER_FILES: dict[str, Path] = {
                   or "/opt/vdl-update/VideoDownloader.dmg"),
     "macos-zip": Path(os.environ.get("VDL_INSTALLER_MACOS_ZIP")
                       or "/opt/vdl-update/VideoDownloader.app.zip"),
+    # 2026-10-30 恢复：R2 探测不达时的本机回退（安全网，保证 CF 侧异常也下得到）
+    "windows": Path(os.environ.get("VDL_INSTALLER_WINDOWS")
+                    or "/opt/vdl-update/VideoDownloader-Setup-1.1.06.exe"),
 }
 
 # 🔴 2026-10-18：Windows 安装包暂时不可用（用户反馈装上后跑不起来），先把该平台
@@ -149,7 +152,10 @@ _INSTALLER_FILES: dict[str, Path] = {
 _INSTALLER_ENABLED: dict[str, bool] = {
     "macos": True,
     "macos-zip": True,
-    "windows": False,
+    # 2026-10-30 恢复 True：下架原因是「一开下载连弹 aria2c 黑窗」，已由
+    # server/win_no_window.py（CREATE_NO_WINDOW 注入）修复，CI 有真机断言
+    # （desktop/ci_assert_win_no_window.py）。下载页按钮已同步还原。
+    "windows": True,
 }
 
 # R2 公共地址（自定义域 download.hanyuxz.top → 桶 vdl-download 根）。
@@ -162,7 +168,7 @@ _R2_INSTALLER_URLS: dict[str, str] = {
     "macos-zip": os.environ.get("VDL_R2_INSTALLER_MACOS_ZIP")
                  or "https://download.hanyuxz.top/VideoDownloader.app.zip",
     "windows": os.environ.get("VDL_R2_INSTALLER_WINDOWS")
-               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.1.05.exe",
+               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.1.06.exe",
 }
 
 # 安装包媒体类型按扩展名取（DMG≠ZIP≠EXE，写死 zip 会让浏览器把 dmg 也当 zip 处理）。
@@ -251,13 +257,19 @@ def download_meta() -> dict:
         return cached["payload"]
     rel = _read_release_info()
     platforms: dict[str, dict] = {}
-    for plat in ("macos", "macos-zip"):
+    # 2026-10-30：列表补上 windows，否则下载页拿不到 Windows 包的体积，
+    # 只能显示 HTML 里写死的兜底文案（发版换包就会对不上）。
+    for plat in ("macos", "macos-zip", "windows"):
         url = _R2_INSTALLER_URLS.get(plat)
         if not url or not _INSTALLER_ENABLED.get(plat, True):
             continue
         try:
             platforms[plat] = _head_installer(url)
-            _bind_release_version(platforms[plat], rel, plat)
+            # 🔴 Windows 有独立清单 latest-win.json，不能拿 mac 的 latest.json 绑版本
+            #    （2026-10-30 实测：会把 mac 的 v1.1.05 标到 Windows 包上，而实际是
+            #    1.1.06）。这里对 windows 跳过绑定，页面如实显示「安装包更新于 X 日」。
+            if plat != "windows":
+                _bind_release_version(platforms[plat], rel, plat)
         except Exception:  # noqa: BLE001 — 取不到就留空，页面回退静态文案
             platforms[plat] = {"size": 0, "updated": "", "version": ""}
     payload = {"ok": True, "platforms": platforms}

@@ -123,12 +123,17 @@ def test_macos_zip_fallback_redirects():
         ext._r2_reachable = orig
 
 
-def test_windows_disabled_returns_download_page():
-    """windows 关闭期（2026-10-18 起）：GET/HEAD 一律 302 回 /download/。
+def test_windows_installer_gate_follows_switch():
+    """windows 开关闸门：GET/HEAD 一律 302，去向随 `_INSTALLER_ENABLED` 自适应。
 
-    关闭原因：用户反馈 Win 包装上跑不起来。只把页面按钮置灰不够——知道
-    URL 的人仍能下到装不了的包，所以服务端同源拦截。
+    关闭期（2026-10-18 起，用户反馈 Win 包装上跑不起来）：一律 302 回
+    /download/。只把页面按钮置灰不够 —— 知道 URL 的人仍能下到装不了的包，
+    所以服务端同源拦截。
+    2026-10-31：R2 上的坏包已用 CI 官方产物覆盖修复，开关重开 ⇒ 本用例自动
+    转为「必须 302 到 R2 exe」的正向断言（避免重开了但路由还写死回下载页）。
     """
+    enabled = bool(ext._INSTALLER_ENABLED.get("windows"))
+    expected = ext._R2_INSTALLER_URLS["windows"] if enabled else "/download/"
     orig = _patch_reachable(True)
     try:
         c = _client()
@@ -136,9 +141,9 @@ def test_windows_disabled_returns_download_page():
             r = getattr(c, method)("/download/installer?p=windows",
                                    follow_redirects=False)
             assert r.status_code == 302, \
-                f"{method.upper()} 应 302 回下载页，实际 {r.status_code}"
-            assert r.headers.get("location") == "/download/", \
-                f"{method.upper()} 应回 /download/，实际 {r.headers.get('location')}"
+                f"{method.upper()} 应 302，实际 {r.status_code}"
+            assert r.headers.get("location") == expected, \
+                f"{method.upper()} 应去 {expected}，实际 {r.headers.get('location')}"
             assert r.headers.get("cache-control") == "no-store"
     finally:
         ext._r2_reachable = orig
@@ -185,16 +190,22 @@ def test_stats_merged_by_platform():
             c.get("/download/installer?p=macos-zip", follow_redirects=False)
             assert rec.calls == [("installer", "macos"), ("installer", "macos")], \
                 f"macos-zip 应归并进 macos，实际 {rec.calls}"
-            # 2026-10-18 起 windows 整条关掉（包装上跑不起来）⇒ 平台关闭时
-            # **一个字节都没下发，就不该计数**，否则后台会长期挂着
-            # 「有人在下 Windows」的假数据，排障时被带偏。
+            # 平台开关决定「要不要下发」：关闭期（2026-10-18 起，Win 装不上）
+            # 一个字节都没下发 ⇒ 不该计数，否则后台长期挂着「有人在下 Windows」
+            # 的假数据，排障被带偏；2026-10-31 重开后则必须正常计一行。
             n_before = len(rec.calls)
             r = c.get("/download/installer?p=windows", follow_redirects=False)
-            assert r.status_code == 302, f"关闭的平台应 302，实际 {r.status_code}"
-            assert r.headers.get("location") == "/download/", \
-                f"关闭的平台应回下载页，实际 {r.headers.get('location')}"
-            assert len(rec.calls) == n_before, \
-                f"关闭的平台不应计数，实际 {rec.calls}"
+            assert r.status_code == 302, f"应 302，实际 {r.status_code}"
+            if ext._INSTALLER_ENABLED.get("windows"):
+                assert r.headers.get("location") == ext._R2_INSTALLER_URLS["windows"], \
+                    f"开放的 windows 应去 R2 exe，实际 {r.headers.get('location')}"
+                assert len(rec.calls) == n_before + 1, \
+                    f"开放的平台应计一行，实际 {rec.calls}"
+            else:
+                assert r.headers.get("location") == "/download/", \
+                    f"关闭的平台应回下载页，实际 {r.headers.get('location')}"
+                assert len(rec.calls) == n_before, \
+                    f"关闭的平台不应计数，实际 {rec.calls}"
         _with_recorder(body)
     finally:
         ext._r2_reachable = orig

@@ -1229,6 +1229,12 @@ def admin_resolve_demand(request: app.Request, days: int = 84):
     if is_internal:
         # 内部调用（对端来拉数据）只回本地，绝不再触发合并——防递归
         return {"ok": True, "days": days, "demand": rows, "total_sites": len(rows), "peer_ok": False}
+    # 管理员刷新时顺带触发一次回填（后台线程）：本机没上报过的历史需求补到中心，
+    # 下一刷就能在「看全部」里看到网页版自己的数据（2026-10-31）。
+    try:
+        app._backfill_demand_in_background()
+    except Exception:
+        pass
     peer_ok, merged = _merge_peer_demand(rows, days)
     center_ok, merged2 = _merge_center_demand(merged, days)
     return {"ok": True, "days": days, "demand": merged2, "total_sites": len(merged2),

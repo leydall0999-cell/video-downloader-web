@@ -379,6 +379,19 @@ def usage_remote(email: str, admin_token: str, base_url: Optional[str] = None,
 
 
 # ---- 解析需求榜 / 全站功能用量（2026-10-30「全端需求同步 + 全功能用量」）---- #
+def demand_report_remote(token: str, items: list, base_url: Optional[str] = None,
+                        timeout: float = 10.0,
+                        opener: Optional[Callable] = None) -> dict[str, Any]:
+    """网页版（worker）解析失败需求上报授权中心（旁路信号，只落日志文件）。
+
+    items: [{host, url?, category?, ts?}]，最多 20 条/请求。中心按 账号×host 60s
+    节流，但对 ts 在 1 小时前的历史记录放行 —— 供客户端首装回填积压用。
+    """
+    return _post("/api/license/demand_report",
+                 {"token": token, "items": items},
+                 base_url, timeout, opener)
+
+
 def demand_query_remote(admin_token: str, days: int = 84,
                        base_url: Optional[str] = None,
                        timeout: float = 10.0,
