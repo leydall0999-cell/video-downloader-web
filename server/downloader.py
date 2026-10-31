@@ -650,6 +650,13 @@ def _to_int(v):
         return None
 
 
+# 🔴 2026-11-01：api.bilibili.com 的 /x/web-interface/view 起强制要求请求带 buvid3，
+# 缺失时直接返回 HTTP 412 验证页（HTML）⇒ r.json() 抛异常 ⇒ B站 API 兜底静默全失效。
+# 实测：补一个「形态合法」的 buvid3 即恢复 200（值无需真实，B站只校验形态），
+# 无 cookie 与有 cookie 两种情况都实测通过。值按进程固定，避免同一会话频繁换指纹。
+_BILI_BUVID3 = "0F1A2B3C-1234-5678-9ABC-DEF012345678infoc"
+
+
 def _bilibili_api_extract(url: str, proxy: str = "", cookie: str = "") -> dict[str, Any] | None:
     """B站 专用兜底解析器：当 yt-dlp 网络栈反复 IncompleteRead 时，直接用 requests 调 B站 API。
 
@@ -687,6 +694,10 @@ def _bilibili_api_extract(url: str, proxy: str = "", cookie: str = "") -> dict[s
     }
     if cookie:
         headers["Cookie"] = _clean_header_value(cookie)
+    # 缺 buvid3 必被 api 域 412 拦下（见 _BILI_BUVID3 注释），此处补齐
+    if "buvid3" not in (headers.get("Cookie") or ""):
+        _ck = headers.get("Cookie") or ""
+        headers["Cookie"] = (f"{_ck}; " if _ck else "") + f"buvid3={_BILI_BUVID3}"
 
     # 1) 取视频元数据
     view_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
@@ -718,9 +729,22 @@ def _bilibili_api_extract(url: str, proxy: str = "", cookie: str = "") -> dict[s
         r.raise_for_status()
         play_data = r.json()
         if play_data.get("code") != 0:
-            logger.warning("[bilibili api fallback] playurl API code=%s msg=%s", play_data.get("code"), play_data.get("message"))
+            _pcode = play_data.get("code")
+            logger.warning("[bilibili api fallback] playurl API code=%s msg=%s", _pcode, play_data.get("message"))
+            # 稿件级不可播放（删稿/未过审/地区或会员限制）：不是网络或提取器问题，
+            # 兜底同样拿不到流 ⇒ 直接给可读原因，别把 yt-dlp 的 412 天书抛给用户。
+            _why = {
+                -404: "该视频稿件不可播放（可能已删除、未过审或仅限特定地区）",
+                -403: "该视频无访问权限（可能仅限登录或粉丝可见）",
+                62002: "该视频稿件不可见（已下架或设为私有）",
+                -10403: "该视频为大会员专享，需要会员 Cookie 才能取流",
+            }.get(_pcode)
+            if _why:
+                raise ResolveError("视频无法播放", _why)
             return None
         play_info = play_data.get("data") or {}
+    except ResolveError:
+        raise
     except Exception as e:
         logger.warning("[bilibili api fallback] playurl request failed: %s", str(e)[:200])
         return None
@@ -4799,6 +4823,9 @@ def probe(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
                     _last_err = None
                 else:
                     logger.warning("[probe] Bilibili API fallback returned no info")
+            except ResolveError:
+                # 稿件级不可播放（已由兜底给出可读原因）⇒ 原样上抛，不要退化成 yt-dlp 的 412 原文
+                raise
             except Exception as fb_err:
                 logger.warning("[probe] Bilibili API fallback failed: %s", str(fb_err)[:200])
 
