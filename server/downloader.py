@@ -4497,6 +4497,27 @@ def probe(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
             "（有提取码就填上）即可把文件下载到本地。\n"
             "本解析框只处理 YouTube / B站 / 抖音等平台的视频播放页链接。",
         )
+    # 小红书：登录跳转链 / 404 兜底页不是内容页（2026-11-01 需求榜实测：用户贴的是
+    # 分享出来的 login/redirectPath=... 链，yt-dlp 302 到 /404?source=... 后报
+    # Unsupported URL，被错记成 pending_extractor「缺提取器」的假需求）。
+    # 抛错在 _friendly_error 之前 ⇒ 不会写需求榜，避免把「贴错链接」算成「平台缺能力」。
+    if "xiaohongshu.com" in _norm_for_check:
+        _xhs = _norm_for_check.split("?", 1)[0]
+        if ("/login" in _xhs) or ("/404" in _xhs) or ("redirectPath" in _norm_for_check):
+            raise ResolveError(
+                "这是小红书的登录跳转链接，不是某条笔记",
+                "请在小红书里打开要下载的那条笔记 →「分享」→「复制链接」，"
+                "粘出来形如 xiaohongshu.com/explore/xxxx 或 xhslink.cn/xxxx 的链接再解析。",
+            )
+    # 日本演员/偶像官方粉丝俱乐部（Bitfan 平台，如 shu-watanabe.com）：内容是**付费
+    # 会员限定**，需 Bitfan ID + 月费订阅。这类站不做解析（付费墙 + 版权），直接说明
+    # 原因，别让用户反复试，也别记成「缺提取器」的假需求。
+    if _probe_host and any(_f in _probe_host for _f in ("shu-watanabe.com", "bitfan.id")):
+        raise ResolveRestricted(
+            "这是付费会员制的粉丝俱乐部站点",
+            "该站的视频/直播只对付费会员开放（Bitfan ID + 订阅），属受限内容，VDL 不提供解析。\n"
+            "若有公开宣传片，请把视频所在页面的直链、或 B站/YouTube 上的同款链接发来。",
+        )
     url = _norm_for_check
     # 优酷链接归一化：当前主流为 www.youku.com，而 yt-dlp 内置 YoukuIE 仅匹配
     # v/play/player.youku.com，否则会落 generic 提取 → Unsupported URL（pending_extractor）。
