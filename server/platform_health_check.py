@@ -64,6 +64,11 @@ TELEMETRY_DAYS = int(os.environ.get("VDL_HEALTH_TELEMETRY_DAYS", "30"))
 DEMAND_DAYS = int(os.environ.get("VDL_HEALTH_DEMAND_DAYS", "84"))
 DATA_DIR = os.environ.get("VDL_DATA_DIR") or str(Path.home() / ".video-downloader")
 _DEAD_MARKERS = ("删除", "失效", "不存在", "已下线", "404", "not found", "removed", "deleted")
+# 稿件级不可播（≠ 平台故障）：判据与 downloader._bilibili_api_extract 的可读文案对齐
+_CONTENT_UNAVAILABLE_MARKERS = (
+    "不可播放", "稿件不可见", "已删除", "已下架", "设为私有",
+    "大会员专享", "仅限特定地区", "粉丝可见",
+)
 
 # 复用 server 侧模块（拿遥测/需求聚合），找不到就降级为自读 JSONL。
 for _p in (_HERE, os.path.join(_HERE, "server"), os.path.join(os.path.dirname(_HERE), "server")):
@@ -116,12 +121,27 @@ def _resolve(url: str) -> tuple[bool, str, str]:
     except Exception:  # noqa: BLE001
         return False, "bad_response", "HTTP %s %s" % (status, body[:160])
     if isinstance(d, dict) and d.get("error"):
-        return False, str(d.get("category") or "unknown"), str(d.get("error"))[:200]
+        # 带上 hint：稿件级不可播（删稿/地区/会员）的判据只写在 hint 里，
+        # 不带就分不出「平台挂了」和「这条样本本身没了」（见 _is_content_unavailable）。
+        _msg = str(d.get("error"))[:200]
+        if d.get("hint"):
+            _msg += "｜" + str(d.get("hint"))[:200]
+        return False, str(d.get("category") or "unknown"), _msg
     if isinstance(d, dict) and d.get("detail"):
         return False, "http_error", str(d.get("detail"))[:200]
     if isinstance(d, dict) and (d.get("url") or d.get("title") or d.get("formats")):
         return True, "ok", str(d.get("title") or "")[:80]
     return False, "no_payload", body[:160]
+
+
+def _is_content_unavailable(msg: str) -> bool:
+    """解析失败是「这条稿件没了」而不是「平台/提取器坏了」。
+
+    热门榜/发现器取到的是当下热视频，删稿、未过审、地区限制、会员专享都很常见；
+    把它们算进平台健康分母，会让整个平台凭空判成 degraded。
+    """
+    low = msg or ""
+    return any(m in low for m in _CONTENT_UNAVAILABLE_MARKERS)
 
 
 def _sample_alive(url: str) -> bool:
@@ -258,10 +278,18 @@ def main() -> int:
                    "elapsed_s": round(time.time() - t0, 1)}
             if not ok:
                 rec["sample_alive"] = _sample_alive(u)
+                # 稿件级不可播（删稿/地区/会员）⇒ 这条样本失效，不是平台失效。
+                # 热门榜里混进一条死稿就把整个平台判 degraded，是纯误报（2026-11-01 实测）。
+                if _is_content_unavailable(msg):
+                    rec["content_unavailable"] = True
             results.append(rec)
-        ok_n = sum(1 for r in results if r["ok"])
-        alive_n = sum(1 for r in results if r.get("sample_alive", True))
-        if ok_n == len(results):
+        # 分母只算「可用样本」：稿件不可播的不参与平台健康判定
+        usable = [r for r in results if not r.get("content_unavailable")]
+        ok_n = sum(1 for r in usable if r["ok"])
+        alive_n = sum(1 for r in usable if r.get("sample_alive", True))
+        if not usable:
+            status = "sample_invalid"
+        elif ok_n == len(usable):
             status = "healthy"
         elif ok_n > 0:
             status = "degraded"
@@ -270,7 +298,7 @@ def main() -> int:
         else:
             status = "broken"
         items.append({"platform": key, "name": cfg.get("name", key), "status": status,
-                      "source": "sample", "ok": ok_n, "total": len(results),
+                      "source": "sample", "ok": ok_n, "total": len(usable),
                       "evidence": ev, "results": results})
 
     # ---- 自动修复层（2026-11-01）----
