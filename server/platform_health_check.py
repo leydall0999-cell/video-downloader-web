@@ -344,6 +344,24 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         print("健康表写入失败: %s" % e)
 
+    # 「修好了但还没重启」必须显眼，否则等于白修：自动修复只把新版 yt-dlp 解到
+    # 影子目录，线上 vdl-web 仍在跑旧模块（我们不自动重启生产服务）。落一个标记
+    # 文件，任何巡检/人一眼就能看到该重启了；恢复后自动清掉。
+    _pending_path = os.path.join(os.path.dirname(OUT_PATH), "PENDING_RESTART.json")
+    _pending = [{"platform": it["platform"], "name": it.get("name"),
+                 "note": (it.get("repair") or {}).get("note")}
+                for it in items if it["status"] == "repaired_pending_restart"]
+    try:
+        if _pending:
+            with open(_pending_path, "w", encoding="utf-8") as f:
+                json.dump({"since": time.strftime("%Y-%m-%d %H:%M:%S"),
+                           "action": "restart vdl-web to apply upgraded yt-dlp",
+                           "platforms": _pending}, f, ensure_ascii=False, indent=2)
+        elif os.path.isfile(_pending_path):
+            os.remove(_pending_path)
+    except Exception:  # noqa: BLE001
+        pass
+
     print("== 平台健康表 %s ==" % out["generated_at"])
     print("遥测可用=%s 需求可用=%s（窗口 成功%d天 / 需求%d天）"
           % (out["telemetry_available"], out["demand_available"],
@@ -360,6 +378,10 @@ def main() -> int:
     if out.get("autorepair_enabled") and repair_log:
         print("自动修复：尝试 %d 个平台，需要重启生效 %d 个"
               % (len(repair_log), s.get("repaired_pending_restart", 0)))
+        if s.get("repaired_pending_restart"):
+            print("⚠️  有平台已修好但未生效：请重启 vdl-web "
+                  "（systemctl restart vdl-web）后复测；标记见 %s"
+                  % _pending_path)
     for it in items:
         ev = it.get("evidence") or {}
         extra = ""
