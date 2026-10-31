@@ -461,7 +461,17 @@
     $('quotaPanel').style.display = '';
     $('gate').style.display = 'none';
     // 诊断数据旁路加载：不 await —— 健康/统计端点挂了也必须让计费页照常可用
-    loadInsights().catch(() => {});
+    const insightsJob = loadInsights().catch(() => {});
+    // 从 App 的「网页后台」按钮进来时 URL 带 #platform-health：渲染完滚到该面板，
+    // 省掉「还要往下翻两屏」。没有这个 hash 就完全不干预，正常浏览不受影响。
+    if (location.hash === '#platform-health') {
+      insightsJob.then(() => {
+        const target = $('healthPanel');
+        if (target) setTimeout(() => {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 120);
+      });
+    }
   }
 
   async function save() {
