@@ -25,6 +25,11 @@
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:500; }
+  /* 账号锁定：点账号名只看这一个账号，行高亮；再点一次解锁 */
+  #userBox td.acct { cursor:pointer; }
+  #userBox td.acct:hover { color:var(--accent); }
+  #userBox tr.locked td { background:rgba(91,140,255,.10); }
+  #userBox tr.locked td.acct::after { content:" 🔒"; font-size:11px; color:var(--accent); }
   td.cost input { width:84px; text-align:right; }
   td.where, td.real { color:var(--muted); font-size:12px; line-height:1.5; max-width:280px; }
   tr.changed td.cost input { border-color:var(--amber); }
@@ -207,13 +212,20 @@
       已登录的会话立即失效；删除是软删除，记录留在库里可审计，但该邮箱不能再登录或注册。
     </p>
     <div class="toolbar">
-      <input id="userSearch" type="search" placeholder="搜邮箱或标识" autocomplete="off">
+      <input id="userSearch" type="search" placeholder="搜邮箱或标识；点账号可锁定" autocomplete="off">
       <select id="userFilter">
         <option value="">全部账号</option>
-        <option value="super">只看超管</option>
-        <option value="admin">只看管理员</option>
-        <option value="off">只看已禁用</option>
-        <option value="member">只看会员</option>
+        <optgroup label="身份">
+          <option value="super">只看超管</option>
+          <option value="admin">只看管理员</option>
+          <option value="normal">只看普通用户</option>
+          <option value="off">只看已禁用</option>
+        </optgroup>
+        <optgroup label="会员">
+          <option value="dl">只看下载会员</option>
+          <option value="ai">只看 AI 会员</option>
+          <option value="none">只看无会员</option>
+        </optgroup>
       </select>
       <span class="note" id="userMeta"></span>
     </div>
@@ -885,15 +897,26 @@
     const rows = USERS.filter((u) => {
       const id = String(u.identifier || u.user_id || '').toLowerCase();
       if (kw && id.indexOf(kw) < 0) return false;
+      const m = u.membership || {};
+      // 身份与会员两组筛选可和关键词叠加；会员互斥时按「无会员」单列
       if (f === 'super') return u.role === 'super';
       if (f === 'admin') return !!u.is_admin;
+      if (f === 'normal') return !u.is_admin && !u.disabled && u.role !== 'super';
       if (f === 'off') return !!u.disabled;
-      if (f === 'member') {
-        const m = u.membership || {};
-        return !!(m.download_active || m.ai_active);
-      }
+      if (f === 'dl') return !!m.download_active;
+      if (f === 'ai') return !!m.ai_active;
+      if (f === 'none') return !m.download_active && !m.ai_active;
       return true;
     });
+    // 锁定口径：搜索词与某账号完全一致 = 已锁定该账号（行高亮 + 🔒）。
+    const lockedId = kw ? String(USERS.find((u) => {
+      const id = String(u.identifier || u.user_id || '').toLowerCase();
+      return id === kw;
+    })?.user_id || '' ) : '';
+    $('userMeta').textContent = lockedId
+      ? '已锁定 ' + (USERS.find((u) => String(u.user_id) === String(lockedId)).identifier || lockedId)
+        + '（再点一次账号解锁）'
+      : '匹配 ' + rows.length + ' / 共 ' + USERS.length + ' 个账号';
     const body = rows.map((u) => {
       const m = u.membership || {};
       const mem = (m.download_active ? '<span class="tag cloud">下载会员</span>' : '')
@@ -914,8 +937,11 @@
             '<button class="ghost btn-sm" data-act="pw"' + idq + '>改密码</button>',
             '<button class="ghost btn-sm btn-danger" data-act="del"' + idq + '>删除</button>',
           ].join(''));
-      return '<tr><td>' + esc(u.identifier || u.user_id)
-        + '<br><span class="note">' + esc(fmtTs(u.created_at)) + ' 注册</span></td>'
+      const acct = esc(u.identifier || u.user_id)
+        + '<br><span class="note">' + esc(fmtTs(u.created_at)) + ' 注册</span>';
+      return '<tr' + (String(u.user_id) === lockedId ? ' class="locked"' : '')
+        + '><td class="acct" data-acct="' + esc(u.identifier || u.user_id)
+        + '" title="点击只看这个账号，再点一次解锁">' + acct + '</td>'
         + '<td>' + userTags(u) + mem + dev + '</td>'
         + '<td class="real">' + esc(u.last_login ? fmtTs(u.last_login) : '—') + '</td>'
         + '<td class="real">' + esc(m.credits_total != null ? m.credits_total : '—') + '</td>'
@@ -932,6 +958,15 @@
     if (box._bound) return;              // 事件委托只绑一次，重渲染不会叠加监听
     box._bound = true;
     box.addEventListener('click', (e) => {
+      // 点账号 = 锁定到这个账号（搜索框填精确标识）；再点同一个 = 解锁
+      const acct = e.target.closest('td.acct');
+      if (acct) {
+        const input = $('userSearch');
+        const cur = (input.value || '').trim().toLowerCase();
+        input.value = (cur === String(acct.dataset.acct).toLowerCase()) ? '' : acct.dataset.acct;
+        renderUsers();
+        return;
+      }
       const btn = e.target.closest('button[data-act]');
       if (!btn) return;
       userAct(btn.dataset.act, btn.dataset.id).catch((err) => toast('操作失败：' + err.message, 3600));
