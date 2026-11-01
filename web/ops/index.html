@@ -149,8 +149,8 @@
       <thead><tr><th>端</th><th>设备</th><th>版本</th><th>账号</th><th style="text-align:right">最后活跃</th></tr></thead>
       <tbody id="platRecent"></tbody>
     </table></div>
-    <small class="note">数据来源：授权中心设备画像（登录 / 心跳时上报），<b>按设备台数计</b>，与上面「桌面 App」那格的请求次数不是同一口径。
-      为什么只能从这里看：桌面 App 的请求 UA 是 python-requests，<b>Mac 版与 Windows 版在访问日志里完全一样</b>，日志层面永远分不出来；
+    <small class="note">数据来源（混合口径，卡片上已分别标注）：Mac 版 / Windows 版＝授权中心设备画像（登录 / 心跳时上报），<b>按设备台数计</b>；网页版＝nginx 访问日志的真人访客（浏览器 UA 访问页面级路径，按 IP+浏览器去重，<b>含未登录访客</b>，卡片小字里的「登录设备 X 台」才是画像口径）。
+      为什么桌面端只能从设备画像看：桌面 App 的请求 UA 是 python-requests，<b>Mac 版与 Windows 版在访问日志里完全一样</b>，日志层面永远分不出来；
       端身份只有设备画像（platform + 版本号）记得住。老版本 App 未上报 platform 的，按主机名兜底，仍认不出的显示「未识别」。</small>
   </section>
 
@@ -299,6 +299,7 @@ async function load(){
       fetch('/api/admin/visits?range=' + encodeURIComponent(RANGE), {headers:{'X-Admin-Key':key}}).then(r=>{ if(!r.ok) throw new Error('visits '+r.status); return r.json(); }),
       fetch('/api/admin/events?limit=500&range=' + encodeURIComponent(RANGE), {headers:{'X-Admin-Key':key}}).then(r=>{ if(!r.ok) throw new Error('events '+r.status); return r.json(); }),
     ]);
+    window.VISITS_DATA = v;   // 端分布「网页版」卡要用真人 UV（两接口同 RANGE，口径一致）
     renderKpis(v, e);
     renderVisits(v);
     renderEvents(e);
@@ -370,12 +371,18 @@ function renderPlatforms(d){
     const click = key ? ` data-plat="${esc(key)}" title="点击查看这一端的账号"` : '';
     return `<div class="platcard ${cls}"${click}><b>${num(n)}</b><span>${label}</span><small>${tip}</small></div>`;
   };
+  // 网页版卡：访客口径（nginx 访问日志真人 UV，按 IP+浏览器去重，含未登录访客）。
+  // 登录设备数退居小字；点卡片展开的账号清单仍是登录口径（设备画像只有登录用户）。
+  const hv = (window.VISITS_DATA && window.VISITS_DATA.human) || {};
+  const webS = P.web || { devices: 0, users: 0 };
+  const webN = Number(hv.uv != null ? hv.uv : webS.devices);
+  const webCard = `<div class="platcard p-web" data-plat="web" title="点击查看登录过的账号（不含未登录访客）"><b>${num(webN)}</b><span>网页版</span><small>访客（含未登录）· 登录设备 ${num(webS.devices)} 台 / ${num(webS.users)} 账号</small></div>`;
   $('platCards').innerHTML =
     card('p-mac','Mac 版', P.macos) +
     card('p-win','Windows 版', P.windows) +
-    card('p-web','网页版', P.web) +
+    webCard +
     (P.unknown && P.unknown.devices ? card('p-unk','未识别', P.unknown) : '');
-  $('platHint').textContent = `${d.range_label || '全部'}活跃 · 按设备计 ${num(d.total_devices)} 台 / ${num(d.total_users)} 个账号`;
+  $('platHint').textContent = `${d.range_label || '全部'}活跃 · Mac/Win 按设备计、网页版按访客计 · 登录设备共 ${num(d.total_devices)} 台 / ${num(d.total_users)} 个账号`;
 
   const vs = d.versions || {};
   const vkeys = Object.keys(vs);
