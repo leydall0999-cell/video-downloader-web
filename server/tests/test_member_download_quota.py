@@ -100,32 +100,38 @@ def _patch_engine_calls(store):
 
 
 # --------------------------------------------------------------------------- #
-# 1. cn / 单节点：匿名一律 403（下载必须登录），且不创建任何任务
+# 1. cn / 单节点：匿名「首次免费」放行并计数，用完 403 引导注册（2026-11-01 改版）
 # --------------------------------------------------------------------------- #
-def test_anonymous_rejected_403():
+def test_anonymous_first_free_then_403():
     with tempfile.TemporaryDirectory() as d:
         store = _patch_global_store(d)
         calls = _patch_engine_calls(store)
-        req = _StubRequest()
-        raised = None
+        from pathlib import Path as _P
+        _orig_gsp = core_rt._guest_store_path
+        core_rt._guest_store_path = lambda: _P(d) / "guest_downloads.json"
         try:
-            core_rt._member_quota_gate(req, need=1)
-        except A.HTTPException as e:
-            raised = e
-        assert raised is not None and raised.status_code == 403, f"匿名应 403，实为 {raised}"
-        assert "登录" in raised.detail, "403 文案必须引导登录"
-        # create_download 全链路同样 403，且 store.create 零调用
-        payload = A.DownloadRequest(url="https://www.bilibili.com/video/BV1GJ411x7h7",
-                                    quality="360")
-        raised2 = None
-        try:
+            req = _StubRequest()
+            # 第一次：匿名放行（mode=guest），任务创建成功且按 IP 计数
+            gate = core_rt._member_quota_gate(req, need=1)
+            assert gate.get("mode") == "guest", f"匿名首次应放行（guest），实为 {gate}"
+            payload = A.DownloadRequest(url="https://www.bilibili.com/video/BV1GJ411x7h7",
+                                        quality="360")
             core_rt.create_download(payload, req)
-        except A.HTTPException as e:
-            raised2 = e
-        assert raised2 is not None and raised2.status_code == 403
-        assert calls["created"] == 0, "匿名下载必须挡在 store.create 之前"
-        assert store.quota_state("download")["used"] == 0, "匿名被拒后不应有任何计数"
-    print("✅ 匿名下载 403 拒绝（下载必须登录，共享池作废），且不建任务不计数")
+            assert calls["created"] == 1, "匿名首次下载应创建任务"
+            assert core_rt._guest_used(core_rt._guest_key(req)) == 1, "匿名下载后计数应为 1"
+            # 第二次：免费体验用完 → 403，文案必须含「登录」（前端 needLogin 正则据此弹注册框）
+            raised = None
+            try:
+                core_rt._member_quota_gate(req, need=1)
+            except A.HTTPException as e:
+                raised = e
+            assert raised is not None and raised.status_code == 403, f"用完后应 403，实为 {raised}"
+            assert "登录" in raised.detail, "403 文案必须含「登录」以触发前端弹框"
+            assert calls["created"] == 1, "用完后不得再创建任务"
+            assert store.quota_state("download")["used"] == 0, "匿名体验不占任何账号额度"
+        finally:
+            core_rt._guest_store_path = _orig_gsp  # 恢复真函数，避免污染其它用例
+    print("✅ 匿名首次免费下载（按 IP 计数），用完 403 引导注册，不占账号额度")
 
 
 # --------------------------------------------------------------------------- #
@@ -294,15 +300,25 @@ def test_relay_mode_gate_and_count():
                 raised = e
             assert raised is not None and raised.status_code == 402
 
-            # 5a2. cn 判 NO_AUTH（匿名 / 无效 token）→ 403 引导登录
-            core_rt._relay_member_quota = lambda req, p: {
-                "ok": False, "code": "NO_AUTH", "error": "请先登录账号"}
-            raised = None
+            # 5a2. cn 判 NO_AUTH（匿名 / 无效 token）→ 首次走 guest 免费体验，用完 403
+            from pathlib import Path as _P
+            _orig_gsp = core_rt._guest_store_path
+            core_rt._guest_store_path = lambda: _P(d) / "guest_downloads.json"
             try:
-                core_rt._member_quota_gate(_StubRequest(), need=1)
-            except A.HTTPException as e:
-                raised = e
-            assert raised is not None and raised.status_code == 403, f"回派 NO_AUTH 应 403，实为 {raised}"
+                core_rt._relay_member_quota = lambda req, p: {
+                    "ok": False, "code": "NO_AUTH", "error": "请先登录账号"}
+                gate_g = core_rt._member_quota_gate(_StubRequest(), need=1)
+                assert gate_g.get("mode") == "guest", f"匿名首次应走 guest 体验，实为 {gate_g}"
+                core_rt._guest_mark(core_rt._guest_key(_StubRequest()), 1)
+                raised = None
+                try:
+                    core_rt._member_quota_gate(_StubRequest(), need=1)
+                except A.HTTPException as e:
+                    raised = e
+                assert raised is not None and raised.status_code == 403, f"体验用完应 403，实为 {raised}"
+                assert "登录" in raised.detail, "403 文案必须含「登录」以触发前端弹框"
+            finally:
+                core_rt._guest_store_path = _orig_gsp
 
             # 5b. cn 不可达（回派返回 None）→ fail-open 放行
             core_rt._relay_member_quota = lambda req, p: None
@@ -369,7 +385,7 @@ def test_quota_use_check_only():
 
 
 if __name__ == "__main__":
-    test_anonymous_rejected_403()
+    test_anonymous_first_free_then_403()
     test_exhausted_gate_blocks_before_create()
     test_logged_in_download_counts_to_user()
     test_download_details_prefer_real_title()

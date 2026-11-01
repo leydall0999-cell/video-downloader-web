@@ -9,6 +9,7 @@ import os
 import subprocess
 import hmac
 import json as _json
+import threading
 import time as _time
 from pathlib import Path as _Path
 
@@ -562,12 +563,86 @@ def _device_of(request: app.Request) -> str:
 #   · cn / 单节点（桌面、无回派目标）：直接 current_member_store 预检 + 计数；
 #   · global 节点（hk）：把原始 Authorization 原样回派 cn 的 /api/member/quota/use
 #     （check_only 预检 → 创建成功后回派计数）；cn 不可达时 fail-open（不挡下载）；
-#   · 匿名（无/无效 token）：**一律 403 拒绝**（2026-09-28 用户拍板：网页版与 App 看齐，
-#     下载必须登录 —— 匿名共享池方案作废）。hk 无法本地验 cn token，靠回派响应的
-#     NO_AUTH 识别匿名并同样 403。会员引擎异常仍 fail-open（已登录用户不因故障被挡）。
+#   · 匿名（无/无效 token）：2026-09-28 曾一律 403（与 App 看齐）；2026-11-01 放宽为
+#     「首次免费」——按真实 IP 放行 _GUEST_FREE_DOWNLOADS 次下载，用完 403 引导注册
+#     （转化复盘：浏览有量注册为零，卡点在下载强制登录）。hk 无法本地验 cn token，
+#     靠回派响应的 NO_AUTH 识别匿名并同样走免费体验。会员引擎异常仍 fail-open。
 
 # 下载强制登录的统一文案（前端据此弹登录框，见 web/app.js 的 needLogin 处理）
 _LOGIN_REQUIRED_MSG = "下载前请先登录账号（登陆享受下载权益）"
+
+# —— 匿名免费体验（2026-11-01）：首次下载免注册，用完再要求注册 ——
+# 背景（2026-11-01 复盘）：解析全程开放，但未登录点「下载」被前端本地拦截 + 后端
+# 匿名 403，转化漏斗卡死在「解析成功→点下载」这一步（浏览有量、注册为零）。
+# 改为：匿名访客按真实 IP 放行 _GUEST_FREE_DOWNLOADS 次下载，用完后 403 引导注册
+# （前端 needLogin 正则按「登录」二字识别，文案必须含该词）。权威计数落服务器
+# 磁盘 JSON（按 IP），前端 localStorage 只做体验优化（用完即拦、不发无效请求）。
+_GUEST_FREE_DOWNLOADS = 1
+_GUEST_EXHAUSTED_MSG = "免费下载体验已用完，注册或登录后即可继续使用下载"
+_GUEST_STORE_LOCK = threading.Lock()
+
+
+def _guest_store_path() -> _Path:
+    """匿名免费体验计数文件（与 memberships/ 同一数据目录）。"""
+    base = os.environ.get("VDL_DATA_DIR") or str(_Path.home() / ".video-downloader")
+    return _Path(base) / "guest_downloads.json"
+
+
+def _guest_key(request) -> str:
+    """访客标识 = 真实 IP。🔴 必须用 admin._client_ip（先取 CF-Connecting-IP）：
+    本机 nginx 写的 X-Real-IP 是 $remote_addr = cloudflared 本机地址，CF 隧道下
+    app._client_ip 对**所有**访客都返回 127.0.0.1 ⇒ 拿它当 key 等于全网共用一次
+    免费额度（第一个人用完，所有人都 403）。admin 版由 CF 覆写、客户端伪造不了。"""
+    try:
+        from routers.admin import _client_ip as _admin_client_ip
+        return (_admin_client_ip(request) or "unknown").strip() or "unknown"
+    except Exception:  # noqa: BLE001 — admin 模块不可用时退回同源实现
+        try:
+            return (app._client_ip(request) or "unknown").strip() or "unknown"
+        except Exception:  # noqa: BLE001
+            return "unknown"
+
+
+def _guest_load() -> dict:
+    try:
+        return _json.loads(_guest_store_path().read_text("utf-8") or "{}")
+    except Exception:  # noqa: BLE001 — 文件不存在/损坏按零计数，fail-open
+        return {}
+
+
+def _guest_used(key: str) -> int:
+    rec = _guest_load().get(key)
+    try:
+        return int(rec.get("used", 0)) if isinstance(rec, dict) else int(rec or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _guest_remaining(key: str) -> int:
+    return max(0, _GUEST_FREE_DOWNLOADS - _guest_used(key))
+
+
+def _guest_mark(key: str, n: int = 1) -> None:
+    """匿名下载计数 +1（原子写：tmp + replace，与项目其它 JSON 落盘同款）。"""
+    if n <= 0:
+        return
+    path = _guest_store_path()
+    with _GUEST_STORE_LOCK:
+        data = _guest_load()
+        rec = data.get(key) if isinstance(data.get(key), dict) else {}
+        rec = {"used": int(rec.get("used", 0) if isinstance(rec, dict) else 0) + n,
+               "last_at": round(_time.time(), 3)}
+        data[key] = rec
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps(data, ensure_ascii=False), "utf-8")
+            tmp.replace(path)
+        except Exception as e:  # noqa: BLE001 — 计数失败绝不回滚已创建的任务
+            try:
+                app.logger.warning("[guest-quota] 计数落盘失败（忽略）: %s", str(e)[:160])
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _quota_relay_base() -> str:
@@ -616,13 +691,22 @@ def _member_quota_gate(request, need: int = 1) -> dict:
                     raise app.HTTPException(status_code=402,
                                             detail=res.get("error") or "今日免费下载次数已用尽")
                 if res.get("code") == "NO_AUTH":
-                    # hk 验不了 cn 的 token，匿名/无效 token 由 cn 判定后回传
-                    raise app.HTTPException(status_code=403, detail=_LOGIN_REQUIRED_MSG)
+                    # hk 验不了 cn 的 token，匿名/无效 token 由 cn 判定后回传。
+                    # 2026-11-01：匿名同样享受「首次免费」体验（与 cn 本地口径一致）。
+                    _gk = _guest_key(request)
+                    if _guest_remaining(_gk) > 0:
+                        return {"mode": "guest", "key": _gk}
+                    raise app.HTTPException(status_code=403, detail=_GUEST_EXHAUSTED_MSG)
             remaining = res.get("remaining") if isinstance(res, dict) else None
             return {"mode": "relay", "remaining": remaining if isinstance(remaining, int) else None}
-        # 下载必须登录（2026-09-28 与 App 行为对齐）：匿名一律 403，配额按账号计
+        # 下载必须登录（2026-09-28 与 App 行为对齐）——2026-11-01 放宽为
+        # 「匿名首次免费」：按真实 IP 放行 _GUEST_FREE_DOWNLOADS 次，用完再 403
+        # 引导注册（解析侧本就开放，卡点只在下载，见复盘记录）。
         if not app.get_current_user_id(request):
-            raise app.HTTPException(status_code=403, detail=_LOGIN_REQUIRED_MSG)
+            _gk = _guest_key(request)
+            if _guest_remaining(_gk) > 0:
+                return {"mode": "guest", "key": _gk}
+            raise app.HTTPException(status_code=403, detail=_GUEST_EXHAUSTED_MSG)
         store = app.current_member_store(request)
         q = store.quota_state("download")
         if q.get("unlimited") or q.get("unknown") or q.get("allowed", True):
@@ -658,6 +742,11 @@ def _member_quota_count(request, gate: dict, n: int = 1,
         return None
     _details = [d for d in (details or []) if isinstance(d, dict)]
     try:
+        if gate.get("mode") == "guest":
+            # 匿名免费体验计数：按 IP 落盘（成功创建任务才计，与登录用户同口径）
+            _gk = str(gate.get("key") or "unknown")
+            _guest_mark(_gk, n)
+            return {"ok": True, "resource": "download", "remaining": _guest_remaining(_gk)}
         if gate.get("mode") == "relay":
             _payload = {"resource": "download", "n": n}
             if _details and len(_details) == n:

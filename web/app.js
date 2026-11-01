@@ -767,6 +767,17 @@
     return id;
   };
 
+  // —— 匿名免费体验计数（2026-11-01）——
+  // 权威计数在服务端（按 IP），这里只存「本浏览器已用过免费次数」，用途是
+  // 用完之后点「下载」不再发无效请求、直接弹注册框。存不了（隐私模式）按已用完处理。
+  const guestDlUsed = () => {
+    try { return parseInt(localStorage.getItem('vdl_guest_dl_used') || '0', 10) || 0; }
+    catch (_e) { return 1; }
+  };
+  const guestDlMarkUsed = () => {
+    try { localStorage.setItem('vdl_guest_dl_used', String(guestDlUsed() + 1)); } catch (_e) { /* ignore */ }
+  };
+
   const request = async (path, options = {}, base = '') => {
     const headers = {};
     const subKey = localStorage.getItem('vdl_sub_key');
@@ -795,12 +806,10 @@
     // 防止后端挂起时前端无限等待。大文件上传/下载可传 options.timeout=0 关闭
     // 或传更大值；请求超时抛可读错误而非静默卡死。
     const fetchTimeout = (options && options.timeout) || 120000;
-    // 下载强制登录（2026-09-28 对齐 App）：未登录直接拦在本地，弹登录框、不发请求。
-    // request 定义早于登录弹窗代码，故经 window 钩子解耦（弹窗代码稍后挂载）。
-    if ((path === '/api/download' || path === '/api/batch') && !localStorage.getItem('vdl_auth_token')) {
-      try { if (window.__vdlOpenAuthModal) window.__vdlOpenAuthModal(); } catch (_e) { /* ignore */ }
-      throw { needLogin: true, message: '下载前请先登录账号（登陆享受下载权益）', hint: '' };
-    }
+    // 下载登录门禁（2026-11-01 改版）：不再前端本地拦截，交给服务端判定——
+    // 匿名访客首次下载免费放行（后端按 IP 计数），用完后服务端 403 引导注册，
+    // request() 的 catch 里统一弹登录框。批量下载仍须登录（一次建 N 条任务），
+    // 由 _LOGIN_GATED_ACTIONS 的捕获门禁负责。
     const doFetch = () => {
       if (!fetchTimeout) return fetch(apiBase + path, { ...options, headers: merged });
       const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
@@ -823,6 +832,11 @@
       }
       return await _parseResponse(response);
     } catch (e) {
+      // 服务端 403（免费体验用完）→ 统一弹登录/注册框（needLogin 错误在
+      // 各下载入口静默处理、不重复报错，弹窗动作收敛在这里一处）。
+      if (e && e.needLogin) {
+        try { if (window.__vdlOpenAuthModal) window.__vdlOpenAuthModal(); } catch (_e2) { /* ignore */ }
+      }
       // fetch 超时（AbortError）→ 转成可读提示；DOMException 在部分浏览器无 name
       if (e && (e.name === 'AbortError' || e.code === 20 || String(e.message || '').includes('aborted'))) {
         const secs = Math.round(fetchTimeout / 1000) || 120;
@@ -4635,6 +4649,7 @@
           is_hls: false,
         }),
       }, base);
+      if (!pfToken()) guestDlMarkUsed();   // 歌单曲目同样消耗匿名免费体验
     } catch (error) {
       if (error.needLogin) return null;   // 登录弹窗已弹出，不打断歌单循环
       throw error;
@@ -4831,6 +4846,7 @@
       refs._watchOpts = resolved?.video?.watch_options || [];
       refs._watchHls = !!resolved?.video?.is_hls;
       trackTask(taskId, refs, base);
+      if (!pfToken()) guestDlMarkUsed();   // 匿名免费体验：本次已消耗（服务端同步按 IP 计数）
       return taskId;
     } catch (error) {
       if (error.needLogin) return null;   // 登录弹窗已弹出，不再叠加报错
@@ -10095,7 +10111,7 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     renderAuthHeader();
   };
   // request() 定义早于本段，经 window 钩子解耦调用
-  window.__vdlOpenAuthModal = () => openAuthModal('下载需要登录账号；登陆享受下载权益。');
+  window.__vdlOpenAuthModal = () => openAuthModal('免费下载体验已用完，注册或登录后才能继续使用下载。');
 
   const closeAuthModal = () => { try { el.authModal.close(); } catch (_e) { /* 本来就没开 */ } };
   const amSetStatus = (t) => { el.amStatus.textContent = t || ''; };
@@ -10162,9 +10178,10 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     openAuthModal(msg || '请先登录或注册账号后使用该功能');
   };
   // 只挂「真正执行（会产出结果）」的按钮；前置步骤（解析链接、选择文件）不弹登录 —— 与 App 决策一致。
+  // 🔴 downloadBtn 不在此列（2026-11-01）：单条下载享受「匿名首次免费」，由下方
+  //    专用捕获门禁处理（首免放行 → 用完拦下弹注册框）；批量下载仍在此列强制登录。
   const _LOGIN_GATED_ACTIONS = {
     batchBtn: '批量下载',
-    downloadBtn: '下载',
     ucStartAllBtn: '视频格式转换',
     musStartAllBtn: '音乐格式转换',
     imgStartAllBtn: '图片格式转换',
@@ -10197,7 +10214,25 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
       _notifyNeedLogin('请先登录或注册账号，即可使用' + label);
     } catch (_e) { /* 守卫异常不阻塞页面 */ }
   }, true);
-  // 登录成功后自动补点一次之前被拦下的功能按钮（对齐 App「登录后继续」体验）
+  // —— 单条下载专用门禁（2026-11-01「匿名首次免费」）——
+  // 未登录点「下载」：本浏览器免费次数没用过 → 放行（服务端按 IP 再兜底一次）；
+  // 用过 → 拦下并弹注册框，登录成功后 _replayGatedAction 自动补点继续下载。
+  document.addEventListener('click', (e) => {
+    try {
+      const t = e.target;
+      if (!t || typeof t.closest !== 'function') return;
+      if (!t.closest('#downloadBtn')) return;
+      if (pfToken()) return;                              // 已登录：放行
+      if (guestDlUsed() < 1) return;                      // 首次免费：放行
+      if (e.defaultPrevented) return;
+      _pendingGatedId = 'downloadBtn';
+      e.preventDefault();
+      e.stopPropagation();                                // 阻断按钮自身的 click handler
+      _notifyNeedLogin('免费下载体验已用完，注册或登录后才能继续使用下载');
+    } catch (_e) { /* 守卫异常不阻塞页面 */ }
+  }, true);
+  // 登录成功后自动补点一次之前被拦下的功能按钮（对齐 App「登录后继续」体验；
+  // 单条下载首免门禁同样复用：注册/登录后自动继续刚才那次下载）
   const _replayGatedAction = () => {
     const id = _pendingGatedId;
     _pendingGatedId = '';
