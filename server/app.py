@@ -2263,6 +2263,46 @@ async def _no_cache_frontend(request: Request, call_next):
         # URL 指纹化（index.html 注入的 ?v=）⇒ 可安全长缓存；CF 边缘也会 HIT
         resp.headers["Cache-Control"] = "public, max-age=2592000, immutable"
     return resp
+
+
+@app.middleware("http")
+async def _admin_write_audit(request: Request, call_next):
+    """后台写操作留痕（2026-11-01）。
+
+    后台是公网可达的：删号 / 封号 / 撤管理员 / 发权益都不可逆，没有痕迹就只能
+    靠猜。这里只覆盖 `/api/admin/` 下的写请求（GET 不记，否则翻面板就把日志写满）。
+    被拒绝的请求也记（status=403）—— 「有人试图删号但被拦」本身就是要看见的事。
+    审计失败绝不影响业务：admin_audit.append 内部吞掉所有异常。
+    """
+    path = request.url.path
+    method = request.method
+    if not path.startswith("/api/admin/") or method in ("GET", "HEAD", "OPTIONS"):
+        return await call_next(request)
+    actor = ""
+    try:
+        from user_membership import get_current_user_id
+        actor = str(get_current_user_id(request) or "")
+    except Exception:  # noqa: BLE001 — 取不到身份也要记（记成空，至少有时刻和路径）
+        actor = ""
+    status = 0
+    try:
+        resp = await call_next(request)
+        status = int(resp.status_code)
+        return resp
+    finally:
+        try:
+            import admin_audit
+            admin_audit.append({
+                "actor": actor,
+                "method": method,
+                "path": path,
+                "status": status,
+                "ip": (request.client.host if request.client else ""),
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+
 logger.info("CORS 已开启，允许来源：%s", ", ".join(_cors_origins))
 
 

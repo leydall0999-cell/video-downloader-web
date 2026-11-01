@@ -438,6 +438,19 @@ def admin_platform_usage(days: int = 30, refresh: bool = False,
                 "totals": {"events": 0, "accounts": 0, "platforms": 0}}
 
 
+@router.get("/api/admin/audit")
+def admin_audit_log(request: Request = None, limit: int = 200) -> dict[str, Any]:
+    """超级管理员：后台写操作审计。
+
+    谁在什么时候调了哪个写接口、返回什么状态码。只记写请求，**不记请求体**
+    （里面可能有新密码明文）。旧日志超过 2MB 会滚成 admin_audit.log.1。
+    """
+    require_admin(request)
+    import admin_audit
+    rows = admin_audit.tail(limit)
+    return {"ok": True, "rows": rows, "total": len(rows)}
+
+
 @router.get("/api/admin/config")
 def admin_config(request: Request = None) -> dict[str, Any]:
     require_admin(request)

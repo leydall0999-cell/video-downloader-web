@@ -59,6 +59,29 @@
   details.sub > summary { cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0; }
   .scroll { max-height:400px; overflow:auto; }
   .sub-h { color:var(--muted); font-size:12px; margin:14px 0 6px; }
+  /* 多页签（2026-11-01）：与 App 后台九个页签一一对应，看的是同一份云端数据 */
+  .tabs { display:flex; gap:2px; flex-wrap:wrap; padding:0 24px; border-bottom:1px solid var(--line);
+    background:var(--panel); position:sticky; top:0; z-index:6; }
+  .tab { background:none; border:none; border-bottom:2px solid transparent; color:var(--muted);
+    padding:12px 14px; border-radius:0; font-size:13px; }
+  .tab:hover { color:var(--txt); }
+  .tab.on { color:var(--txt); border-bottom-color:var(--accent); }
+  .view { display:none; }
+  .view.on { display:block; }
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .toolbar input[type=search] { width:240px; }
+  .btn-sm { padding:5px 10px; font-size:12px; border-radius:6px; }
+  .btn-danger { background:rgba(255,107,107,.15); color:var(--red); border:1px solid rgba(255,107,107,.45); }
+  .btn-ok { background:rgba(66,211,146,.15); color:var(--green); border:1px solid rgba(66,211,146,.45); }
+  .tag { display:inline-block; padding:1px 7px; border-radius:6px; font-size:11px; margin-right:4px; }
+  .tag.super { background:rgba(255,184,77,.16); color:var(--amber); }
+  .tag.admin { background:rgba(91,140,255,.16); color:var(--accent); }
+  .tag.off { background:rgba(255,107,107,.16); color:var(--red); }
+  .tag.cloud { background:rgba(66,211,146,.14); color:var(--green); }
+  .tag.local { background:var(--panel2); color:var(--muted); }
+  td.acts { white-space:nowrap; }
+  td.acts button { margin-right:4px; }
+  .pager { display:flex; gap:8px; align-items:center; margin-top:12px; color:var(--muted); font-size:12px; }
 </style>
 </head>
 <body>
@@ -69,6 +92,18 @@
   <button id="save">保存改动</button>
   <button id="reload" class="ghost">重新加载</button>
 </header>
+
+<nav class="tabs" id="tabs" style="display:none">
+  <button class="tab" data-tab="users">用户管理</button>
+  <button class="tab" data-tab="members">会员管理</button>
+  <button class="tab" data-tab="stats">使用统计</button>
+  <button class="tab" data-tab="config">系统配置</button>
+  <button class="tab" data-tab="ai">AI 计费</button>
+  <button class="tab" data-tab="ops">运维监控 ↗</button>
+  <button class="tab" data-tab="recon">每日对账 ↗</button>
+  <button class="tab" data-tab="health">平台健康</button>
+  <button class="tab" data-tab="cookies">Cookie 池</button>
+</nav>
 
 <div class="wrap">
   <section class="panel" id="gate">
@@ -83,7 +118,7 @@
     </div>
   </section>
 
-  <section class="panel" id="main" style="display:none">
+  <section class="panel view" id="main" data-view="ai" style="display:none">
     <h2><span class="dot"></span>AI 积分单价</h2>
     <div class="readonly-bar" id="readonlyBar">
       👀 你以 <b>管理员</b> 身份查看：数据全部可见，但 <b>不能修改</b>。
@@ -102,7 +137,7 @@
     </p>
   </section>
 
-  <section class="panel" id="trialPanel" style="display:none">
+  <section class="panel view" id="trialPanel" data-view="ai" style="display:none">
     <h2><span class="dot"></span>免费试用策略</h2>
     <div class="row">
       <label><input type="checkbox" id="trialEnabled"> 启用「账号首次使用免费一次」</label>
@@ -124,7 +159,7 @@
     <p class="note" id="trialNote"></p>
   </section>
 
-  <section class="panel" id="healthPanel" style="display:none">
+  <section class="panel view" id="healthPanel" data-view="health" style="display:none">
     <h2><span class="dot"></span>平台健康 · 自动修复派单</h2>
     <p class="note">
       每天 4:30 自动巡检：判出 <b>broken</b>（样本还活着但全部解析失败）会先自动升级 yt-dlp
@@ -155,7 +190,7 @@
     </details>
   </section>
 
-  <section class="panel" id="quotaPanel" style="display:none">
+  <section class="panel view" id="quotaPanel" data-view="health" style="display:none">
     <h2><span class="dot"></span>会员墙拦截</h2>
     <p class="note">
       用户被配额拦住时唯一的落点。它既不进需求库、也不进授权中心，
@@ -163,6 +198,73 @@
     </p>
     <div class="kpis" id="quotaKpis"></div>
     <div id="quotaBody"></div>
+  </section>
+
+  <section class="panel view" id="usersPanel" data-view="users">
+    <h2><span class="dot"></span>用户管理</h2>
+    <p class="note">
+      账号唯一真源是授权中心（三端共用）。禁用会同时撤销该账号已签发的 token，
+      已登录的会话立即失效；删除是软删除，记录留在库里可审计，但该邮箱不能再登录或注册。
+    </p>
+    <div class="toolbar">
+      <input id="userSearch" type="search" placeholder="搜邮箱或标识" autocomplete="off">
+      <select id="userFilter">
+        <option value="">全部账号</option>
+        <option value="super">只看超管</option>
+        <option value="admin">只看管理员</option>
+        <option value="off">只看已禁用</option>
+        <option value="member">只看会员</option>
+      </select>
+      <span class="note" id="userMeta"></span>
+    </div>
+    <div id="userBox"></div>
+    <details class="sub">
+      <summary>操作审计（谁在什么时候删了谁 / 封了谁 / 发了什么权益）</summary>
+      <p class="note" style="margin:8px 0 10px">
+        只记写操作，不记请求内容 —— 请求体里可能有新密码明文。被拦下的尝试（403）
+        同样会记，所以「有人试图删号但没删成」也看得见。
+      </p>
+      <div id="auditBox"></div>
+    </details>
+  </section>
+
+  <section class="panel view" id="membersPanel" data-view="members">
+    <h2><span class="dot"></span>会员管理</h2>
+    <p class="note">
+      发放权益与调积分都写授权中心，桌面端下次心跳即生效，不需要用户重启。
+      调积分填负数等于扣减，正数为充值。
+    </p>
+    <div class="toolbar">
+      <input id="memSearch" type="search" placeholder="搜邮箱" autocomplete="off">
+      <span class="note" id="memMeta"></span>
+    </div>
+    <div id="memBox"></div>
+  </section>
+
+  <section class="panel view" id="statsPanel" data-view="stats">
+    <h2><span class="dot"></span>使用统计</h2>
+    <p class="note">
+      两个口径别混：本机事件只记经过这台服务器的请求；三端用量是授权中心里
+      <b>真正消耗配额</b>的次数（详见「平台健康 → 三端用量」）。免费额度被拦的另记在会员墙拦截里。
+    </p>
+    <div class="kpis" id="statsKpis"></div>
+    <div id="statsBox"></div>
+  </section>
+
+  <section class="panel view" id="configPanel" data-view="config">
+    <h2><span class="dot"></span>系统配置</h2>
+    <p class="note">套餐档位与邮件服务（SMTP）。这是本站自己的配置，改动即时生效。</p>
+    <div id="configBox"></div>
+  </section>
+
+  <section class="panel view" id="cookiesPanel" data-view="cookies">
+    <h2><span class="dot"></span>Cookie 池</h2>
+    <p class="note">
+      这里就是网页版真正在用的池子 —— 桌面端后台看到的是同一份，它只是代理过来读。
+      标「缺口」的站点＝需要有人补 Cookie 才能解析。
+    </p>
+    <div class="kpis" id="cookieKpis"></div>
+    <div id="cookieBox"></div>
   </section>
 </div>
 
@@ -536,6 +638,418 @@
       '没有拦截记录');
   }
 
+  // ---------------- 多页签（2026-11-01）----------------
+  // 与 App 后台九个页签一一对应：看的本来就是同一份云端数据，只是入口不同。
+  // 「运维监控 / 每日对账」继续用 /ops/ 那块看板（Admin-Key 鉴权），这里是跳转入口，
+  // 不重复实现一份 —— 两份实现必然不同步。
+  const TAB_TITLE = {
+    users: '用户管理', members: '会员管理', stats: '使用统计', config: '系统配置',
+    ai: 'AI 计费', health: '平台健康', cookies: 'Cookie 池',
+  };
+  const loadedView = {};   // view -> 是否已拉过数据（懒加载：切过去才拉）
+
+  function ensureView(name) {
+    if (loadedView[name]) return;
+    loadedView[name] = true;
+    const map = {
+      users: loadUsers, members: loadMembers, stats: loadStats,
+      config: loadConfig, cookies: loadCookies, health: loadInsights,
+    };
+    if (map[name]) map[name]().catch(() => {});
+  }
+
+  function showTab(name) {
+    if (!TAB_TITLE[name]) return;
+    document.querySelectorAll('[data-view]').forEach((el) => {
+      el.classList.toggle('on', el.dataset.view === name);
+    });
+    document.querySelectorAll('.tab[data-tab]').forEach((b) => {
+      b.classList.toggle('on', b.dataset.tab === name);
+    });
+    if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+    ensureView(name);
+  }
+
+  // 危险操作二次确认（删号 / 封号 / 撤管理员）。
+  // 后台现在是公网可达的：这类动作误点或账号被盗后的代价不可逆，所以不用
+  // 一次点击就执行。自绘遮罩而不用 window.confirm —— 后者在桌面壳里样式不可控，
+  // 也无法要求「手打确认词」。
+  function confirmDanger(title, lines, needWord) {
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:20;'
+        + 'display:flex;align-items:center;justify-content:center;padding:20px';
+      mask.innerHTML = '<div style="max-width:440px;width:100%;background:var(--panel);'
+        + 'border:1px solid var(--line);border-radius:12px;padding:18px">'
+        + '<h3 style="margin:0 0 10px;font-size:15px;color:var(--red)">' + esc(title) + '</h3>'
+        + lines.map((l) => '<p class="note" style="margin:6px 0">' + esc(l) + '</p>').join('')
+        + (needWord ? '<p class="note" style="margin:12px 0 6px">手打 <b>' + esc(needWord)
+          + '</b> 确认（防止误点）</p><input id="_dw" style="width:100%" autocomplete="off">'
+          : '')
+        + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">'
+        + '<button class="ghost" id="_no">取消</button>'
+        + '<button class="btn-danger" id="_yes"' + (needWord ? ' disabled' : '')
+        + '>确认执行</button></div></div>';
+      document.body.appendChild(mask);
+      const inp = mask.querySelector('#_dw');
+      const yes = mask.querySelector('#_yes');
+      if (inp) inp.addEventListener('input', () => { yes.disabled = inp.value.trim() !== needWord; });
+      const done = (v) => { mask.remove(); resolve(v); };
+      mask.querySelector('#_no').addEventListener('click', () => done(false));
+      yes.addEventListener('click', () => { if (!yes.disabled) done(true); });
+      mask.addEventListener('click', (e) => { if (e.target === mask) done(false); });
+      if (inp) inp.focus();
+    });
+  }
+
+  // ---------------- 用户管理 ----------------
+  let USERS = [];
+  async function loadUsers() {
+    const d = await api('/api/admin/users');
+    USERS = d.users || [];
+    $('userMeta').textContent = '共 ' + USERS.length + ' 个账号';
+    renderUsers();
+    loadAudit().catch(() => {});   // 审计是旁路：拿不到不影响用户列表
+  }
+
+  // 后台写操作审计（2026-11-01）：公网后台的兜底，主要是能回答「这个号是谁删的」。
+  async function loadAudit() {
+    const d = await api('/api/admin/audit?limit=100');
+    const rows = d.rows || [];
+    const ACT = {
+      '/set-admin': '设置管理员', '/disable': '封禁', '/enable': '解封',
+      '/reset-password': '重置密码', '/delete': '删除账号',
+      '/grant': '发放权益', '/credits': '调整积分',
+      '/config/smtp': '改邮件配置', '/config/plans': '改套餐',
+      '/credit-costs': '改积分单价', '/stats/reset': '重置统计',
+    };
+    const TARGETED = ['/delete', '/disable', '/enable', '/set-admin', '/reset-password'];
+    $('auditBox').innerHTML = table(
+      ['时间', '操作人', '动作', '结果'],
+      rows.map((r) => {
+        const p = String(r.path || '');
+        const k = Object.keys(ACT).find((s) => p.endsWith(s)) || '';
+        let tgt = k && TARGETED.indexOf(k) >= 0
+          ? p.replace(/^\/api\/admin\/users\//, '').replace(k, '').replace(/\/$/, '')
+          : '';
+        try { tgt = decodeURIComponent(tgt); } catch (e) { /* 解码失败就按原样显示 */ }
+        const st = Number(r.status || 0);
+        const ok = st >= 200 && st < 300;
+        return '<tr><td class="real">' + esc(fmtTs(r.ts)) + '</td>'
+          + '<td>' + esc(r.actor || '未识别') + '</td>'
+          + '<td>' + esc(k ? ACT[k] : p)
+          + (tgt ? '<br><span class="note">' + esc(tgt) + '</span>' : '') + '</td>'
+          + '<td>' + (ok ? '<span class="chip good">' + esc(st) + '</span>'
+            : '<span class="chip bad">' + esc(st || '异常') + '</span>') + '</td></tr>';
+      }),
+      '还没有写操作记录（这项审计从 2026-11-01 才开始记，之前的操作没有痕迹）。');
+  }
+
+  function userTags(u) {
+    let t = '';
+    if (u.role === 'super') t += '<span class="tag super">超管</span>';
+    else if (u.is_admin) t += '<span class="tag admin">管理员</span>';
+    if (u.disabled) t += '<span class="tag off">已禁用</span>';
+    if (u.self) t += '<span class="tag local">当前</span>';
+    t += u.source === 'cloud'
+      ? '<span class="tag cloud">云端</span>' : '<span class="tag local">仅本机</span>';
+    return t;
+  }
+
+  function renderUsers() {
+    const kw = ($('userSearch').value || '').trim().toLowerCase();
+    const f = $('userFilter').value;
+    const rows = USERS.filter((u) => {
+      const id = String(u.identifier || u.user_id || '').toLowerCase();
+      if (kw && id.indexOf(kw) < 0) return false;
+      if (f === 'super') return u.role === 'super';
+      if (f === 'admin') return !!u.is_admin;
+      if (f === 'off') return !!u.disabled;
+      if (f === 'member') {
+        const m = u.membership || {};
+        return !!(m.download_active || m.ai_active);
+      }
+      return true;
+    });
+    const body = rows.map((u) => {
+      const m = u.membership || {};
+      const mem = (m.download_active ? '<span class="tag cloud">下载会员</span>' : '')
+        + (m.ai_active ? '<span class="tag cloud">AI 会员</span>' : '');
+      const dev = u.device_count
+        ? '<br><span class="note">' + esc(u.device_count) + ' 台设备</span>' : '';
+      const idq = ' data-id="' + esc(u.user_id) + '"';
+      const acts = u.self
+        ? '<span class="note">当前账号不可操作</span>'
+        : [
+          u.is_admin
+            ? '<button class="ghost btn-sm" data-act="unadmin"' + idq + '>撤管理员</button>'
+            : '<button class="ghost btn-sm" data-act="admin"' + idq + '>设管理员</button>',
+          u.disabled
+            ? '<button class="ghost btn-sm" data-act="enable"' + idq + '>解封</button>'
+            : '<button class="ghost btn-sm" data-act="disable"' + idq + '>封禁</button>',
+          '<button class="ghost btn-sm" data-act="pw"' + idq + '>改密码</button>',
+          '<button class="ghost btn-sm btn-danger" data-act="del"' + idq + '>删除</button>',
+        ].join('');
+      return '<tr><td>' + esc(u.identifier || u.user_id)
+        + '<br><span class="note">' + esc(fmtTs(u.created_at)) + ' 注册</span></td>'
+        + '<td>' + userTags(u) + mem + dev + '</td>'
+        + '<td class="real">' + esc(u.last_login ? fmtTs(u.last_login) : '—') + '</td>'
+        + '<td class="real">' + esc(m.credits_total != null ? m.credits_total : '—') + '</td>'
+        + '<td class="acts">' + acts + '</td></tr>';
+    });
+    $('userBox').innerHTML = table(
+      ['账号', '身份 / 权益', '最近登录', '积分', '操作'], body,
+      (kw || f) ? '没有匹配的账号' : '库里还没有账号');
+    bindUserActions();
+  }
+
+  function bindUserActions() {
+    const box = $('userBox');
+    if (box._bound) return;              // 事件委托只绑一次，重渲染不会叠加监听
+    box._bound = true;
+    box.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      userAct(btn.dataset.act, btn.dataset.id).catch((err) => toast('操作失败：' + err.message, 3600));
+    });
+  }
+
+  async function userAct(act, id) {
+    const u = USERS.find((x) => String(x.user_id) === String(id)) || {};
+    const who = u.identifier || id;
+    const base = '/api/admin/users/' + encodeURIComponent(id);
+    const post = (path, body) => api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    if (act === 'admin' || act === 'unadmin') {
+      const on = act === 'admin';
+      if (!on && !await confirmDanger('撤销管理员',
+        [who + ' 将失去后台访问权限（数据仍可见的部分也会被拒）。'], '')) return;
+      await post(base + '/set-admin', { is_admin: on });
+      toast(on ? '已设为管理员' : '已撤销管理员');
+    } else if (act === 'disable') {
+      if (!await confirmDanger('封禁账号', [
+        who + ' 会被立即踢下线，并且不能再登录。',
+        '封禁同时撤销该账号已签发的 token，所以正在用的桌面端也会掉线。',
+      ], '')) return;
+      await post(base + '/disable');
+      toast('已封禁');
+    } else if (act === 'enable') {
+      await post(base + '/enable');
+      toast('已解封');
+    } else if (act === 'pw') {
+      const pw = window.prompt('为 ' + who + ' 设置新密码（至少 6 位）');
+      if (!pw) return;
+      await post(base + '/reset-password', { new_password: pw });
+      toast('密码已重置');
+    } else if (act === 'del') {
+      if (!await confirmDanger('删除账号', [
+        who + ' 将被删除，不能再登录或注册。',
+        '这是软删除：记录留在库里可审计，但没有「恢复」按钮。',
+      ], 'DELETE')) return;
+      await post(base + '/delete');
+      toast('已删除');
+    } else {
+      return;
+    }
+    loadedView.users = false;
+    ensureView('users');
+  }
+
+  // ---------------- 会员管理 ----------------
+  let MEMBERS = [];
+  let PLAN_CODES = [];
+
+  async function loadMembers() {
+    const d = await api('/api/admin/memberships');
+    MEMBERS = d.memberships || [];
+    $('memMeta').textContent = '共 ' + MEMBERS.length + ' 条权益记录';
+    renderMembers();
+    // 套餐 code 用于「发权益」时的提示，拿不到就退化成手填
+    if (!PLAN_CODES.length) {
+      try {
+        const c = await api('/api/admin/config');
+        PLAN_CODES = Object.keys(c.plans || {});
+      } catch (e) { /* 拿不到不影响发权益，只是没得提示 */ }
+    }
+  }
+
+  function renderMembers() {
+    const kw = ($('memSearch').value || '').trim().toLowerCase();
+    const rows = MEMBERS.filter((m) => !kw
+      || String(m.identifier || m.user_id || '').toLowerCase().indexOf(kw) >= 0);
+    const body = rows.map((m) => {
+      const dl = m.download_active
+        ? '<span class="tag cloud">' + esc(m.download_plan || '生效中') + '</span>'
+          + '<br><span class="note">至 ' + esc(fmtTs(m.download_expire_at)) + '</span>'
+        : '<span class="note">—</span>';
+      const ai = m.ai_active
+        ? '<span class="tag cloud">' + esc(m.ai_plan || '生效中') + '</span>'
+        : '<span class="note">—</span>';
+      const idq = ' data-id="' + esc(m.user_id) + '"';
+      return '<tr><td>' + esc(m.identifier || m.user_id) + '</td>'
+        + '<td>' + dl + '</td>'
+        + '<td>' + ai + '</td>'
+        + '<td class="real">' + esc(m.ai_credits_left != null ? m.ai_credits_left : '—') + '</td>'
+        + '<td class="real">' + esc(m.permanent_credits != null ? m.permanent_credits : '—') + '</td>'
+        + '<td class="real">' + esc(m.credits_total != null ? m.credits_total : '—') + '</td>'
+        + '<td class="acts">'
+        + '<button class="ghost btn-sm" data-mact="grant"' + idq + '>发权益</button>'
+        + '<button class="ghost btn-sm" data-mact="credit"' + idq + '>调积分</button>'
+        + '</td></tr>';
+    });
+    $('memBox').innerHTML = table(
+      ['账号', '下载会员', 'AI 会员', 'AI 余额', '永久积分', '合计', '操作'],
+      body, kw ? '没有匹配的账号' : '还没有任何权益记录');
+    bindMemberActions();
+  }
+
+  function bindMemberActions() {
+    const box = $('memBox');
+    if (box._bound) return;
+    box._bound = true;
+    box.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-mact]');
+      if (!btn) return;
+      memberAct(btn.dataset.mact, btn.dataset.id)
+        .catch((err) => toast('操作失败：' + err.message, 3600));
+    });
+  }
+
+  async function memberAct(act, id) {
+    const m = MEMBERS.find((x) => String(x.user_id) === String(id)) || {};
+    const who = m.identifier || id;
+    const post = (path, body) => api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (act === 'grant') {
+      const tip = PLAN_CODES.length ? '\n可选 code：' + PLAN_CODES.join('、') : '';
+      const code = window.prompt('给 ' + who + ' 发放哪个套餐 code？' + tip);
+      if (!code) return;
+      await post('/api/admin/memberships/grant', { user_id: id, code: String(code).trim() });
+      toast('已发放');
+    } else if (act === 'credit') {
+      const v = window.prompt('给 ' + who + ' 调多少积分？（正数充值，负数扣减）', '100');
+      if (v == null || v === '') return;
+      const delta = Number(v);
+      if (!Number.isFinite(delta) || delta === 0) { toast('请填非零整数'); return; }
+      await post('/api/admin/memberships/credits', { user_id: id, delta: Math.trunc(delta) });
+      toast('积分已调整');
+    } else {
+      return;
+    }
+    loadedView.members = false;
+    ensureView('members');
+  }
+
+  // ---------------- 使用统计 ----------------
+  const KIND_LABEL = {
+    resolve: '解析请求', download: '下载', cloud_drive: '网盘下载', matting: '抠图',
+    dewatermark: '去水印', commentary: '视频解说', subtitle: '字幕提取',
+  };
+
+  async function loadStats() {
+    const d = await api('/api/admin/stats');
+    const byKind = d.by_kind || {};
+    const total = Number(d.total || 0);
+    const keys = Object.keys(byKind).sort((a, b) => Number(byKind[b]) - Number(byKind[a]));
+    $('statsKpis').innerHTML = kpi(total, '本机事件总数')
+      + kpi(keys.length, '事件类型')
+      + kpi(d.cloud_overview ? (d.cloud_overview.active_users || 0) : '—', '云端活跃账号')
+      + kpi(d.cloud_overview ? Object.keys(d.cloud_overview.by_resource || {}).length : '—',
+        '云端功能维度');
+    const body = keys.map((k) => {
+      const name = k.indexOf('quota_block_') === 0
+        ? '会员墙拦截 · ' + (RES_LABEL[k.replace('quota_block_', '')] || k.replace('quota_block_', ''))
+        : (KIND_LABEL[k] || k);
+      const pct = total ? (Number(byKind[k]) / total * 100).toFixed(1) + '%' : '—';
+      return '<tr><td>' + esc(name) + '<br><span class="note">' + esc(k) + '</span></td>'
+        + '<td class="real">' + esc(byKind[k]) + '</td>'
+        + '<td class="real">' + esc(pct) + '</td></tr>';
+    });
+    let html = table(['事件类型', '次数', '占比'], body,
+      '这台服务器还没有记录到任何事件（要么没人用，要么统计从最近才开）。');
+    const ov = d.cloud_overview;
+    if (ov) {
+      const res = ov.by_resource || {};
+      const rk = Object.keys(res).sort((a, b) => Number(res[b]) - Number(res[a]));
+      html += '<p class="sub-h">授权中心口径 · 三端真实配额消耗（近 '
+        + esc(ov.days || 30) + ' 天）</p>';
+      html += table(['功能', '次数'],
+        rk.map((k) => '<tr><td>' + esc(RES_LABEL[k] || k) + '</td>'
+          + '<td class="real">' + esc(res[k]) + '</td></tr>'),
+        '云端近 30 天没有配额消耗记录。');
+    } else {
+      html += '<p class="note" style="margin-top:12px">'
+        + '拿不到云端用量（授权中心不可达或没配管理令牌），上面的数字只是本机口径。</p>';
+    }
+    $('statsBox').innerHTML = html;
+  }
+
+  // ---------------- 系统配置 ----------------
+  async function loadConfig() {
+    const d = await api('/api/admin/config');
+    const plans = d.plans || {};
+    const codes = Object.keys(plans);
+    let html = '<p class="sub-h">套餐档位（' + codes.length + ' 个）'
+      + (d.has_plan_overrides ? ' · 存在后台覆盖层' : '') + '</p>';
+    html += table(['code', '名称', '价格', '时长', '积分'],
+      codes.map((c) => {
+        const p = plans[c] || {};
+        const price = p.price != null ? '¥' + p.price : (p.price_cents != null ? '¥' + (p.price_cents / 100) : '—');
+        const days = p.days != null ? p.days + ' 天' : (p.months != null ? p.months + ' 个月' : '—');
+        const credits = p.credits != null ? p.credits : (p.ai_credits != null ? p.ai_credits : '—');
+        return '<tr><td>' + esc(c) + '</td><td>' + esc(p.name || p.title || '—') + '</td>'
+          + '<td class="real">' + esc(price) + '</td>'
+          + '<td class="real">' + esc(days) + '</td>'
+          + '<td class="real">' + esc(credits) + '</td></tr>';
+      }), '还没有配置套餐');
+    const smtp = d.smtp || {};
+    html += '<p class="sub-h">邮件服务（SMTP）</p>';
+    html += smtp.configured
+      ? table(['服务器', '账号', '发件人'],
+        (smtp.accounts || []).map((a) => '<tr><td>' + esc(a.host || '—') + ':'
+          + esc(a.port || '') + '</td><td>' + esc(a.user || '—') + '</td>'
+          + '<td class="real">' + esc(a.from || '—') + '</td></tr>'), '')
+      : '<p class="empty">没有配置 SMTP：找回密码 / 验证码邮件发不出去。</p>';
+    html += '<p class="note" style="margin-top:12px">'
+      + '超管账号：' + (d.has_superuser ? '已存在' : '<b style="color:var(--red)">没有</b>')
+      + ' · 这些是本站配置，改动即时生效，不需要重启。</p>';
+    $('configBox').innerHTML = html;
+  }
+
+  // ---------------- Cookie 池 ----------------
+  async function loadCookies() {
+    const d = await api('/api/admin/cookies');
+    const s = d.summary || {};
+    $('cookieKpis').innerHTML = kpi(s.accounts != null ? s.accounts : '—', '账号数')
+      + kpi(s.entries != null ? s.entries : '—', 'Cookie 条目')
+      + kpi(s.valid != null ? s.valid : '—', '已验真有效')
+      + kpi(s.invalid != null ? s.invalid : '—', '已判失效')
+      + kpi((d.gaps || []).length, '缺口站点');
+    const rows = (d.domains || []).map((r) => {
+      const gap = (d.gaps || []).indexOf(r.domain) >= 0;
+      const st = gap ? '<span class="chip bad">缺口</span>'
+        : (r.valid ? '<span class="chip good">有效</span>'
+          : (r.invalid ? '<span class="chip warn">失效</span>' : '<span class="chip mute">未验真</span>'));
+      return '<tr><td>' + esc(r.domain) + (r.stale ? '<br><span class="note">超 7 天未更新</span>' : '') + '</td>'
+        + '<td>' + st + '</td>'
+        + '<td class="real">' + esc(r.accounts != null ? r.accounts : '—') + '</td>'
+        + '<td class="real">' + esc(r.entries != null ? r.entries : '—') + '</td>'
+        + '<td class="real">' + esc(r.valid || 0) + ' / ' + esc(r.invalid || 0) + ' / ' + esc(r.unknown || 0) + '</td>'
+        + '</tr>';
+    });
+    $('cookieBox').innerHTML = table(
+      ['站点', '状态', '账号', '条目', '有效 / 失效 / 未验真'], rows, '池子是空的');
+    $('cookieBox').innerHTML += '<p class="note" style="margin-top:12px">池目录 '
+      + esc(d.pool_dir || '—') + ' · 验真过期 ' + esc(Math.round((d.verify_ttl || 0) / 3600))
+      + ' 小时 · 「未验真」不等于不可用，只是还没联网确认过。</p>';
+  }
+
   async function loadInsights() {
     // 两块互不依赖，各拉各的；一个挂了另一个照样出数。
     const jobs = [
@@ -583,20 +1097,17 @@
     $('healthPanel').style.display = '';
     $('quotaPanel').style.display = '';
     $('gate').style.display = 'none';
-    // 诊断数据旁路加载：不 await —— 健康/统计端点挂了也必须让计费页照常可用
-    const insightsJob = loadInsights().catch(() => {});
-    // 从 App 的「网页后台」按钮进来时 URL 带 #platform-health：渲染完滚到该面板，
-    // 省掉「还要往下翻两屏」。没有这个 hash 就完全不干预，正常浏览不受影响。
-    if (location.hash === '#platform-health') {
-      insightsJob.then(() => {
-        // 从 App 按钮进来是奔着数据看的：三个折叠区先展开，否则滚到面板也只看到
-        // 三个「点击展开」，等于白滚一趟。
+    $('tabs').style.display = '';
+    // 默认落在「用户管理」：进后台第一件要干的事通常是看人。
+    // 从 App 的「网页后台」按钮进来时 URL 带 #platform-health，仍然直落健康面板。
+    const want = (location.hash || '').replace('#', '');
+    const start = TAB_TITLE[want] ? want : 'users';
+    showTab(start);
+    if (start === 'health') {
+      // 奔着数据来的：三个折叠区先展开，否则切到面板只看到三个「点击展开」
+      setTimeout(() => {
         document.querySelectorAll('#healthPanel details.sub').forEach((el) => { el.open = true; });
-        const target = $('healthPanel');
-        if (target) setTimeout(() => {
-          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 120);
-      });
+      }, 700);
     }
   }
 
@@ -646,6 +1157,29 @@
       toast('登录失败：' + e.message, 3600);
     }
   });
+  // 页签切换。运维监控 / 每日对账 继续走 /ops/ 那块看板（Admin-Key 鉴权），
+  // 这里只做跳转 —— 同一件事不实现两份。
+  document.querySelectorAll('.tab[data-tab]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const t = b.dataset.tab;
+      if (t === 'ops' || t === 'recon') {
+        window.open('/ops/' + (t === 'recon' ? '#recon' : ''), '_blank');
+        return;
+      }
+      showTab(t);
+    });
+  });
+  ['userSearch', 'userFilter'].forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    const rerender = () => { if (USERS.length) renderUsers(); };
+    el.addEventListener('input', rerender);
+    el.addEventListener('change', rerender);
+  });
+  if ($('memSearch')) {
+    $('memSearch').addEventListener('input', () => { if (MEMBERS.length) renderMembers(); });
+  }
+
   $('reload').addEventListener('click', () => { load().catch((e) => toast('加载失败：' + e.message, 3600)); });
   $('save').addEventListener('click', () => { save().catch((e) => toast('保存失败：' + e.message, 3600)); });
 })();
