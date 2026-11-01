@@ -247,14 +247,46 @@
       两个口径别混：本机事件只记经过这台服务器的请求；三端用量是授权中心里
       <b>真正消耗配额</b>的次数（详见「平台健康 → 三端用量」）。免费额度被拦的另记在会员墙拦截里。
     </p>
+    <div class="toolbar">
+      <button id="statsReset" class="ghost">重置本机统计</button>
+      <span class="note" id="statsMeta"></span>
+    </div>
     <div class="kpis" id="statsKpis"></div>
     <div id="statsBox"></div>
+    <p class="sub-h">三端安装与活跃（授权中心的设备记录）</p>
+    <div class="kpis" id="installKpis"></div>
+    <div id="installBox"></div>
   </section>
 
   <section class="panel view" id="configPanel" data-view="config">
     <h2><span class="dot"></span>系统配置</h2>
-    <p class="note">套餐档位与邮件服务（SMTP）。这是本站自己的配置，改动即时生效。</p>
+    <p class="note">
+      这里的改动会<b>下发授权中心</b>，Mac / Windows / 网页三端同时生效 —— 价格与免费额度的
+      放行判定都在云端，只改本机等于「改了看不见」。
+    </p>
+    <p class="note" id="cloudSyncNote"></p>
+
+    <p class="sub-h">套餐档位（价格 / 时长 / 积分 / 上下架）</p>
     <div id="configBox"></div>
+    <div class="toolbar">
+      <button id="plansSave">保存套餐并下发</button>
+      <span class="note" id="plansMeta"></span>
+    </div>
+
+    <p class="sub-h">免费额度 · 每日上限（云端放行口径，改完点保存才下发）</p>
+    <div id="freeQuotaBox"></div>
+    <div class="toolbar">
+      <button id="fqSave">保存免费额度</button>
+      <span class="note" id="fqMeta"></span>
+    </div>
+
+    <p class="sub-h">邮件服务 SMTP · 找回密码 / 验证码</p>
+    <div id="smtpBox"></div>
+    <div class="toolbar">
+      <button id="smtpAdd" class="ghost">+ 添加账户</button>
+      <button id="smtpSave">保存邮件配置</button>
+      <span class="note" id="smtpMeta"></span>
+    </div>
   </section>
 
   <section class="panel view" id="cookiesPanel" data-view="cookies">
@@ -263,6 +295,11 @@
       这里就是网页版真正在用的池子 —— 桌面端后台看到的是同一份，它只是代理过来读。
       标「缺口」的站点＝需要有人补 Cookie 才能解析。
     </p>
+    <div class="toolbar">
+      <button id="ckInject">补 Cookie</button>
+      <button id="ckVerifyAll" class="ghost">全量验真</button>
+      <span class="note" id="ckMeta"></span>
+    </div>
     <div class="kpis" id="cookieKpis"></div>
     <div id="cookieBox"></div>
   </section>
@@ -277,14 +314,24 @@
   <section class="panel view" id="reconPanel" data-view="recon">
     <h2><span class="dot"></span>每日对账</h2>
     <p class="note">
-      资金对账（已收款 / 已发货 / 卡密核销三类差异）目前只在<b>授权中心后台</b>提供，
-      网页后台还没有接这一块 —— 原来这里的页签其实是跳到一个不存在的锚点，
-      点开看到的仍是运维看板。
+      授权中心每 10 分钟自扫一次，这里读的就是那份报告：<b>已收款 / 自动发货 / 卡密核销</b>
+      三方交叉核对。差异分三类 —— 付了钱没发货、发了货找不到订单、套餐金额对不上。
     </p>
-    <p class="note">
-      运维侧的可观测数据（访客 / 错误事件 / 网页转化 / 解析需求 / 会员公告）
-      请切到「运维监控」，那一页已经在后台内直接打开了。
-    </p>
+    <div class="toolbar">
+      <select id="reconDays">
+        <option value="1">近 1 天</option>
+        <option value="3">近 3 天</option>
+        <option value="7" selected>近 7 天</option>
+        <option value="30">近 1 个月</option>
+        <option value="180">近半年</option>
+        <option value="365">近 1 年</option>
+      </select>
+      <button id="reconRun">拉取报告</button>
+      <span class="note" id="reconMeta"></span>
+    </div>
+    <div class="kpis" id="reconKpis"></div>
+    <div id="reconBox"></div>
+    <div id="reconMisBox"></div>
   </section>
 </div>
 
@@ -688,6 +735,7 @@
     const map = {
       users: loadUsers, members: loadMembers, stats: loadStats,
       config: loadConfig, cookies: loadCookies, health: loadInsights,
+      recon: loadRecon,
     };
     if (map[name]) map[name]().catch(() => {});
   }
@@ -739,6 +787,38 @@
       yes.addEventListener('click', () => { if (!yes.disabled) done(true); });
       mask.addEventListener('click', (e) => { if (e.target === mask) done(false); });
       if (inp) inp.focus();
+    });
+  }
+
+  // 通用输入弹窗（2026-11-01）：Cookie 注入这类「贴一长串」的操作不能用
+  // window.prompt —— 桌面壳里是单行框，Cookie 上千字符既看不全也没法换行。
+  function askText(title, hint, opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:21;'
+        + 'display:flex;align-items:center;justify-content:center;padding:20px';
+      const field = opts.multiline
+        ? '<textarea id="_aw" rows="7" style="width:100%;resize:vertical;'
+          + 'font-family:var(--mono,monospace);font-size:12px" placeholder="'
+          + esc(opts.placeholder || '') + '"></textarea>'
+        : '<input id="_aw" style="width:100%" value="' + esc(opts.value || '') + '" placeholder="'
+          + esc(opts.placeholder || '') + '" autocomplete="off">';
+      mask.innerHTML = '<div style="max-width:560px;width:100%;background:var(--panel);'
+        + 'border:1px solid var(--line);border-radius:12px;padding:18px">'
+        + '<h3 style="margin:0 0 10px;font-size:15px">' + esc(title) + '</h3>'
+        + (hint ? '<p class="note" style="margin:6px 0 10px">' + esc(hint) + '</p>' : '')
+        + field
+        + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">'
+        + '<button class="ghost" id="_aNo">取消</button>'
+        + '<button id="_aYes">' + esc(opts.okText || '确定') + '</button></div></div>';
+      document.body.appendChild(mask);
+      const inp = mask.querySelector('#_aw');
+      const done = (v) => { mask.remove(); resolve(v); };
+      mask.querySelector('#_aNo').addEventListener('click', () => done(null));
+      mask.querySelector('#_aYes').addEventListener('click', () => done(inp.value.trim()));
+      mask.addEventListener('click', (e) => { if (e.target === mask) done(null); });
+      inp.focus();
     });
   }
 
@@ -818,18 +898,19 @@
       const dev = u.device_count
         ? '<br><span class="note">' + esc(u.device_count) + ' 台设备</span>' : '';
       const idq = ' data-id="' + esc(u.user_id) + '"';
-      const acts = u.self
-        ? '<span class="note">当前账号不可操作</span>'
-        : [
-          u.is_admin
-            ? '<button class="ghost btn-sm" data-act="unadmin"' + idq + '>撤管理员</button>'
-            : '<button class="ghost btn-sm" data-act="admin"' + idq + '>设管理员</button>',
-          u.disabled
-            ? '<button class="ghost btn-sm" data-act="enable"' + idq + '>解封</button>'
-            : '<button class="ghost btn-sm" data-act="disable"' + idq + '>封禁</button>',
-          '<button class="ghost btn-sm" data-act="pw"' + idq + '>改密码</button>',
-          '<button class="ghost btn-sm btn-danger" data-act="del"' + idq + '>删除</button>',
-        ].join('');
+      const acts = '<button class="ghost btn-sm" data-act="usage"' + idq + '>详情</button>'
+        + (u.self
+          ? '<span class="note">当前账号不可操作</span>'
+          : [
+            u.is_admin
+              ? '<button class="ghost btn-sm" data-act="unadmin"' + idq + '>撤管理员</button>'
+              : '<button class="ghost btn-sm" data-act="admin"' + idq + '>设管理员</button>',
+            u.disabled
+              ? '<button class="ghost btn-sm" data-act="enable"' + idq + '>解封</button>'
+              : '<button class="ghost btn-sm" data-act="disable"' + idq + '>封禁</button>',
+            '<button class="ghost btn-sm" data-act="pw"' + idq + '>改密码</button>',
+            '<button class="ghost btn-sm btn-danger" data-act="del"' + idq + '>删除</button>',
+          ].join(''));
       return '<tr><td>' + esc(u.identifier || u.user_id)
         + '<br><span class="note">' + esc(fmtTs(u.created_at)) + ' 注册</span></td>'
         + '<td>' + userTags(u) + mem + dev + '</td>'
@@ -863,6 +944,7 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
     });
+    if (act === 'usage') { return showUserUsage(id); }
     if (act === 'admin' || act === 'unadmin') {
       const on = act === 'admin';
       if (!on && !await confirmDanger('撤销管理员',
@@ -896,6 +978,105 @@
     }
     loadedView.users = false;
     ensureView('users');
+  }
+
+  // 单用户使用详情（2026-11-01）：数据源是授权中心 usage。
+  // 网页版没有本机账号表 —— 三端账号只在云端，任何「查本机」的做法都只会
+  // 得到「用户不存在」。这一页就是 App 后台「使用详情」的等价物。
+  async function showUserUsage(id) {
+    const mask = document.createElement('div');
+    mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:21;'
+      + 'display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
+    mask.innerHTML = '<div style="max-width:900px;width:100%;background:var(--panel);'
+      + 'border:1px solid var(--line);border-radius:12px;padding:18px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;'
+      + 'margin-bottom:10px"><h3 style="margin:0;font-size:15px">' + esc(id) + ' · 使用详情</h3>'
+      + '<button class="ghost btn-sm" id="_uClose">关闭</button></div>'
+      + '<div id="_uBody"><p class="note">正在向授权中心查询…</p></div></div>';
+    document.body.appendChild(mask);
+    mask.querySelector('#_uClose').addEventListener('click', () => mask.remove());
+    mask.addEventListener('click', (e) => { if (e.target === mask) mask.remove(); });
+    const body = mask.querySelector('#_uBody');
+    let r;
+    try {
+      r = await api('/api/admin/users/' + encodeURIComponent(id) + '/usage');
+    } catch (e) {
+      body.innerHTML = '<p class="err">加载失败：' + esc(e.message) + '</p>';
+      return;
+    }
+    if (!r || r.ok === false) {
+      body.innerHTML = '<p class="err">查不到：' + esc((r && r.error) || '未知原因')
+        + '</p><p class="note">如果账号确实存在，多半是网页服务没配 VDL_LICENSE_ADMIN_TOKEN。</p>';
+      return;
+    }
+    const u = r.usage || {};
+    const a = u.authority || {};
+    const days = (u.usage_history || []).slice(0, 14);
+    const devs = u.devices || [];
+    const buys = u.purchases || [];
+    const ymd = (ts) => (ts ? new Date(Number(ts) * 1000).toLocaleDateString('zh-CN') : '—');
+    const now = Date.now() / 1000;
+    const dlOk = Number(a.member_until_dl || 0) > now;
+    const aiOk = Number(a.member_until_ai || 0) > now;
+    let html = '<div class="kpis">'
+      + kpi(dlOk ? ymd(a.member_until_dl) : '—', '下载会员到期')
+      + kpi(aiOk ? ymd(a.member_until_ai) : '—', 'AI 会员到期')
+      + kpi(a.ai_credits_left != null ? a.ai_credits_left : '—', 'AI 积分余额')
+      + kpi(a.perm_credits != null ? a.perm_credits : '—', '永久 + 赠送积分')
+      + kpi(devs.length, '已绑定设备')
+      + '</div>';
+    const todayUse = a.usage || {};
+    const uk = Object.keys(todayUse);
+    html += '<p class="sub-h" style="margin-top:14px">今日用量（北京时间日切，App 与网页共用同一份）</p>';
+    html += uk.length
+      ? table(['功能', '次数'], uk.map((k) => '<tr><td>' + esc(RES_LABEL[k] || k)
+        + '</td><td class="real">' + esc(todayUse[k]) + '</td></tr>'), '')
+      : '<p class="empty">今天还没用过任何功能。</p>';
+    html += '<p class="sub-h" style="margin-top:14px">近 14 天用量</p>';
+    html += days.length
+      ? table(['日期', '合计', '明细'], days.map((x) => {
+        const c = x.counts || {};
+        const total = Object.keys(c).reduce((s, k) => s + (Number(c[k]) || 0), 0);
+        const det = Object.keys(c).map((k) => (RES_LABEL[k] || k) + ' ' + c[k]).join(' · ');
+        return '<tr><td>' + esc(x.date) + '</td><td class="real">' + esc(total)
+          + '</td><td>' + esc(det || '—') + '</td></tr>';
+      }), '')
+      : '<p class="empty">还没有按天累积的用量记录（该功能上线前的数据无法补录）。</p>';
+    html += '<p class="sub-h" style="margin-top:14px">设备（' + devs.length + '）</p>';
+    html += devs.length
+      ? table(['设备名', '指纹', '最近在线'], devs.map((d) => '<tr><td>' + esc(d.name || '—')
+        + '</td><td><code>' + esc(String(d.fp || '').slice(0, 14)) + '</code></td>'
+        + '<td class="real">' + esc(d.last_seen ? ymd(d.last_seen) : '—') + '</td></tr>'), '')
+      : '<p class="empty">没有设备记录。</p>';
+    html += '<p class="sub-h" style="margin-top:14px">订单（' + buys.length + '）</p>';
+    html += buys.length
+      ? table(['时间', '套餐', '说明'], buys.slice(-20).reverse().map((p) => '<tr>'
+        + '<td>' + esc(ymd(p.created_at || p.ts)) + '</td>'
+        + '<td>' + esc(p.plan || p.code || p.plan_code || '—') + '</td>'
+        + '<td>' + esc(p.note || '') + '</td></tr>'), '')
+      : '<p class="empty">没有购买记录。</p>';
+    const flows = [].concat(
+      (u.spends || []).map((x) => ({ t: x.ts || x.created_at, k: '扣减',
+        v: -(Number(x.cost) || 0), d: x.op || '' })),
+      (u.adjusts || []).map((x) => ({ t: x.ts || x.created_at, k: '人工调整',
+        v: Number(x.delta) || 0, d: x.note || '' })))
+      .sort((x, y) => (Number(y.t) || 0) - (Number(x.t) || 0)).slice(0, 20);
+    html += '<p class="sub-h" style="margin-top:14px">积分流水（近 20 条）</p>';
+    html += flows.length
+      ? table(['时间', '类型', '变动', '说明'], flows.map((f) => '<tr>'
+        + '<td>' + esc(ymd(f.t)) + '</td><td>' + esc(f.k) + '</td>'
+        + '<td class="real">' + (f.v > 0 ? '+' : '') + esc(f.v) + '</td>'
+        + '<td>' + esc(f.d) + '</td></tr>'), '')
+      : '<p class="empty">没有积分流水。</p>';
+    const dm = u.data_meta;
+    if (dm) {
+      html += '<p class="sub-h" style="margin-top:14px">云端资料备份（只有元数据）</p>'
+        + '<p class="note">分区：' + esc((dm.parts || []).join('、') || '—')
+        + ' · 体积：' + esc(dm.size || '—')
+        + ' · 最后同步：' + esc(dm.updated_at ? ymd(dm.updated_at) : '—')
+        + '<br>内容由客户端端到端加密后再上传，服务端和超管都读不出明文。</p>';
+    }
+    body.innerHTML = html;
   }
 
   // ---------------- 会员管理 ----------------
@@ -1028,44 +1209,367 @@
         + '拿不到云端用量（授权中心不可达或没配管理令牌），上面的数字只是本机口径。</p>';
     }
     $('statsBox').innerHTML = html;
+    loadInstallStats().catch(() => {});   // 旁路：中心不可达不影响本机口径
   }
 
-  // ---------------- 系统配置 ----------------
+  // 三端安装 / 活跃（2026-11-01）：原来只有桌面 App 后台能看「装了多少台」。
+  // 口径：设备的 first_seen = 安装；platform 缺失的旧设备归 unknown，不臆测。
+  async function loadInstallStats() {
+    let r;
+    try {
+      r = await api('/api/admin/install-stats');
+    } catch (e) {
+      $('installBox').innerHTML = '<p class="note">安装统计不可用：' + esc(e.message) + '</p>';
+      return;
+    }
+    if (!r || r.ok === false) {
+      $('installBox').innerHTML = '<p class="note">安装统计不可用：'
+        + esc((r && r.error) || '未知原因') + '</p>';
+      return;
+    }
+    const s = r.stats || {};
+    const inst = s.installs || {};
+    const exts = s.ext || {};
+    const act = s.active || {};
+    const PLAT = { mac: 'Mac', macos: 'Mac', win: 'Windows', windows: 'Windows',
+      web: '网页版', linux: 'Linux', unknown: '未上报' };
+    $('installKpis').innerHTML = kpi(s.devices_total || 0, '设备总数')
+      + kpi(act.d7 || 0, '近 7 天活跃')
+      + kpi(act.d30 || 0, '近 30 天活跃')
+      + kpi(Object.keys(inst).length, '平台数');
+    const rows = Object.keys(inst).map((p) => {
+      const v = inst[p] || {};
+      return '<tr><td>' + esc(PLAT[p] || p) + '</td>'
+        + '<td class="real">' + esc(v.total || 0) + '</td>'
+        + '<td class="real">' + esc(v.today || 0) + '</td>'
+        + '<td class="real">' + esc(v.d7 || 0) + '</td></tr>';
+    });
+    let html = table(['平台', '累计安装', '今日新增', '近 7 天新增'], rows, '还没有设备上报');
+    const ek = Object.keys(exts);
+    if (ek.length) {
+      html += '<p class="sub-h" style="margin-top:12px">浏览器扩展（按浏览器）</p>'
+        + table(['浏览器', '设备数'], ek.map((b) => '<tr><td>' + esc(b)
+          + '</td><td class="real">' + esc(exts[b]) + '</td></tr>'), '');
+    }
+    $('installBox').innerHTML = html;
+  }
+
+  // 重置本机事件统计（不动授权中心的真实用量 —— 那是独立存储的额度数据）。
+  async function resetStats() {
+    const ok = await confirmDanger('重置本机统计', [
+      '会清空这台服务器记录的事件计数（解析 / 下载 / 抠图 / 会员墙拦截等）。',
+      '授权中心的真实用量不受影响：三端消耗了多少配额由云端独立记录。',
+      '这个动作不能撤销，但也没多大风险 —— 历史趋势本来就没存。',
+    ], 'RESET');
+    if (!ok) return;
+    $('statsMeta').textContent = '重置中…';
+    let r;
+    try {
+      r = await api('/api/admin/stats/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+    } catch (e) {
+      $('statsMeta').textContent = '';
+      toast('重置失败：' + e.message, 4200);
+      return;
+    }
+    if (r && r.ok) {
+      $('statsMeta').textContent = '已重置';
+      toast('本机统计已清零');
+      loadedView.stats = false;
+      ensureView('stats');
+    } else {
+      $('statsMeta').textContent = '';
+      toast('重置失败：' + ((r && r.error) || '未知原因'), 4200);
+    }
+  }
+  $('statsReset').addEventListener('click', () => resetStats().catch((e) => toast(e.message, 4200)));
+
+  // ---------------- 系统配置（2026-11-01：从只读改为可改 + 下发三端） ----------------
+  // 三块：套餐档位 / 免费额度 / SMTP。前两块必须下发授权中心，否则三端不认。
+  let CFG = null;
+  // 注意：GET /api/admin/config 的 plans 是**展示结构**（download_member.plans /
+  // ai_member.plans / credit_packs），不是覆盖层里的那三个扁平键。
+  // 读错会得到空表 —— 界面上看不见任何档位，也就没法改价。
+  const PLAN_CATS = [
+    ['download_plans', 'VIP 会员', (p) => (p.download_member || {}).plans],
+    ['ai_plans', 'AI 会员', (p) => (p.ai_member || {}).plans],
+    ['credit_packs', '积分包', (p) => p.credit_packs],
+  ];
+
   async function loadConfig() {
     const d = await api('/api/admin/config');
-    const plans = d.plans || {};
-    const codes = Object.keys(plans);
-    let html = '<p class="sub-h">套餐档位（' + codes.length + ' 个）'
-      + (d.has_plan_overrides ? ' · 存在后台覆盖层' : '') + '</p>';
-    html += table(['code', '名称', '价格', '时长', '积分'],
-      codes.map((c) => {
-        const p = plans[c] || {};
-        const price = p.price != null ? '¥' + p.price : (p.price_cents != null ? '¥' + (p.price_cents / 100) : '—');
-        const days = p.days != null ? p.days + ' 天' : (p.months != null ? p.months + ' 个月' : '—');
-        const credits = p.credits != null ? p.credits : (p.ai_credits != null ? p.ai_credits : '—');
-        return '<tr><td>' + esc(c) + '</td><td>' + esc(p.name || p.title || '—') + '</td>'
-          + '<td class="real">' + esc(price) + '</td>'
-          + '<td class="real">' + esc(days) + '</td>'
-          + '<td class="real">' + esc(credits) + '</td></tr>';
-      }), '还没有配置套餐');
-    const smtp = d.smtp || {};
-    html += '<p class="sub-h">邮件服务（SMTP）</p>';
-    html += smtp.configured
-      ? table(['服务器', '账号', '发件人'],
-        (smtp.accounts || []).map((a) => '<tr><td>' + esc(a.host || '—') + ':'
-          + esc(a.port || '') + '</td><td>' + esc(a.user || '—') + '</td>'
-          + '<td class="real">' + esc(a.from || '—') + '</td></tr>'), '')
-      : '<p class="empty">没有配置 SMTP：找回密码 / 验证码邮件发不出去。</p>';
-    html += '<p class="note" style="margin-top:12px">'
-      + '超管账号：' + (d.has_superuser ? '已存在' : '<b style="color:var(--red)">没有</b>')
-      + ' · 这些是本站配置，改动即时生效，不需要重启。</p>';
-    $('configBox').innerHTML = html;
+    CFG = d;
+    const ready = d.cloud_sync && d.cloud_sync.ready;
+    $('cloudSyncNote').innerHTML = ready
+      ? '云端下发通道：<b>可用</b>（保存后立刻写授权中心）'
+      : '<b style="color:var(--red)">云端下发通道不可用</b> —— 网页服务没配 '
+        + 'VDL_LICENSE_ADMIN_TOKEN，改动只会落在本机，三端不生效。';
+    renderPlans(d);
+    renderFreeQuota(d);
+    renderSmtp(d);
   }
+
+  function renderPlans(d) {
+    const plans = d.plans || {};
+    let html = '';
+    PLAN_CATS.forEach(([cat, title, pick]) => {
+      const group = pick(plans) || {};
+      const rows = Object.keys(group).map((code) => {
+        const p = group[code] || {};
+        const money = p.price_cny != null ? p.price_cny : (p.price != null ? p.price : '');
+        const onSale = p.on_sale !== false;
+        const dq = ' data-cat="' + cat + '" data-code="' + esc(code) + '"';
+        return '<tr><td><code>' + esc(code) + '</code><br><span class="note">'
+          + esc(p.label || p.name || '') + '</span></td>'
+          + '<td><input type="number" step="0.01" min="0" style="width:96px" value="'
+          + esc(money) + '"' + dq + ' data-field="price_cny"></td>'
+          + '<td>' + (p.days != null
+            ? '<input type="number" min="1" style="width:76px" value="' + esc(p.days) + '"'
+              + dq + ' data-field="days">'
+            : '<span class="note">—</span>') + '</td>'
+          + '<td>' + (p.credits != null
+            ? '<input type="number" min="0" style="width:90px" value="' + esc(p.credits) + '"'
+              + dq + ' data-field="credits">'
+            : '<span class="note">—</span>') + '</td>'
+          + '<td><label class="note" style="display:inline-flex;gap:6px;align-items:center">'
+          + '<input type="checkbox" style="width:auto"' + (onSale ? ' checked' : '') + dq
+          + ' data-field="on_sale">上架</label></td></tr>';
+      });
+      html += '<p class="sub-h" style="margin-top:14px">' + esc(title)
+        + '（' + Object.keys(group).length + ' 档）</p>'
+        + table(['档位', '价格 ¥', '时长（天）', '积分', '状态'], rows, '还没有配置');
+    });
+    // 覆盖层提示放在表格上方，不占 plansMeta —— 那个位置留给「保存回执」，
+    // 否则保存后一刷新就被这句盖掉，用户看不到到底下发成功没有。
+    $('configBox').innerHTML = (d.has_plan_overrides
+      ? '<p class="note">本机存在后台覆盖层（每次保存会连同云端现值一起下发）</p>' : '')
+      + html;
+  }
+
+  async function savePlans() {
+    const body = {};
+    document.querySelectorAll('#configBox input[data-code]').forEach((inp) => {
+      const cat = inp.dataset.cat;
+      const code = inp.dataset.code;
+      const field = inp.dataset.field;
+      let v;
+      if (inp.type === 'checkbox') v = inp.checked;
+      else {
+        v = Number(inp.value);
+        if (!Number.isFinite(v) || v < 0) return;   // 脏值跳过，不发出去
+      }
+      body[cat] = body[cat] || {};
+      body[cat][code] = body[cat][code] || {};
+      body[cat][code][field] = v;
+    });
+    if (!Object.keys(body).length) { toast('没有可保存的改动'); return; }
+    $('plansMeta').textContent = '保存并下发中…';
+    let r;
+    try {
+      r = await api('/api/admin/config/plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      $('plansMeta').textContent = '';
+      toast('保存失败：' + e.message, 4200);
+      return;
+    }
+    const cloud = r.cloud_plans || {};
+    if (r && r.ok && cloud.ok) {
+      $('plansMeta').textContent = '已保存并下发（三端生效）';
+      toast('套餐已保存，Mac / Windows / 网页三端同时生效');
+    } else if (r && r.ok) {
+      $('plansMeta').textContent = '⚠️ 只存到本机，云端未同步：' + (cloud.reason || '未知原因');
+      toast('⚠️ 本机已保存，但没下发到授权中心 —— 三端价格不会变。原因：'
+        + (cloud.reason || '未知'), 6500);
+    } else {
+      $('plansMeta').textContent = '';
+      toast('保存失败：' + ((r && r.error) || '未知原因'), 4200);
+    }
+    loadedView.config = false;
+    ensureView('config');
+  }
+
+  function renderFreeQuota(d) {
+    const local = d.free_quota_local || {};
+    const cloud = d.free_quota_cloud || {};
+    const keys = d.quota_keys || [];
+    // 显示「当前生效值」：云端覆盖 > 本机意图 > 代码默认
+    const freeEff = Object.assign({}, d.free_daily_defaults || {},
+      local.daily_free_limits || {}, cloud.daily_free_limits || {});
+    const memEff = Object.assign({}, d.member_daily_defaults || {},
+      local.daily_member_limits || {}, cloud.daily_member_limits || {});
+    const modeOn = (cloud.mode || local.mode || 'on') === 'on';
+    const drift = [];
+    if (local.daily_free_limits && JSON.stringify(local.daily_free_limits)
+      !== JSON.stringify(cloud.daily_free_limits || {})) drift.push('免费每日上限');
+    if (local.daily_member_limits && JSON.stringify(local.daily_member_limits)
+      !== JSON.stringify(cloud.daily_member_limits || {})) drift.push('会员每日上限');
+    if (local.mode && cloud.mode && local.mode !== cloud.mode) drift.push('额度开关');
+
+    let html = '<div class="toolbar"><label class="note" style="display:inline-flex;gap:6px;'
+      + 'align-items:center"><input type="checkbox" id="fqMode" style="width:auto"'
+      + (modeOn ? ' checked' : '') + '>启用免费额度（关掉 = 全部按会员口径）</label></div>';
+    if (drift.length) {
+      html += '<p class="note" style="color:var(--amber,#b26b00)">本机覆盖与云端生效不一致：'
+        + esc(drift.join('、')) + ' —— 点下面保存会重新下发。</p>';
+    }
+    const mk = (label, data, prefix) => '<p class="sub-h" style="margin-top:12px">' + label
+      + '（<code>' + prefix + '</code>）</p>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px">'
+      + keys.map((k) => '<label class="note" style="display:flex;gap:8px;align-items:center;'
+        + 'justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px 10px">'
+        + '<span>' + esc(RES_LABEL[k] || k) + '</span>'
+        + '<input type="number" min="0" style="width:78px" value="'
+        + esc(data[k] != null ? data[k] : '') + '" data-fq="' + prefix + '" data-res="'
+        + esc(k) + '"></label>').join('')
+      + '</div>';
+    html += mk('免费用户每日上限', freeEff, 'daily_free_limits');
+    html += mk('会员每日上限', memEff, 'daily_member_limits');
+    $('freeQuotaBox').innerHTML = html;
+  }
+
+  async function saveFreeQuota() {
+    const fq = { mode: $('fqMode').checked ? 'on' : 'off', daily_free_limits: {}, daily_member_limits: {} };
+    document.querySelectorAll('#freeQuotaBox input[data-fq]').forEach((inp) => {
+      const v = Number(inp.value);
+      if (!Number.isFinite(v) || v < 0) return;
+      fq[inp.dataset.fq][inp.dataset.res] = Math.trunc(v);
+    });
+    $('fqMeta').textContent = '保存并下发中…';
+    let r;
+    try {
+      r = await api('/api/admin/config/free-quota', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ free_quota: fq }),
+      });
+    } catch (e) {
+      $('fqMeta').textContent = '';
+      toast('保存失败：' + e.message, 4200);
+      return;
+    }
+    const cloud = r.cloud_free_quota || {};
+    if (r && r.ok && cloud.ok) {
+      $('fqMeta').textContent = '已下发（三端生效）';
+      toast('免费额度已保存并下发');
+    } else if (r && r.ok) {
+      $('fqMeta').textContent = '⚠️ 只存到本机：' + (cloud.reason || '未知原因');
+      toast('⚠️ 本机已保存，但没下发到授权中心。原因：' + (cloud.reason || '未知'), 6500);
+    } else {
+      $('fqMeta').textContent = '';
+      toast('保存失败：' + ((r && r.error) || '未知原因'), 4200);
+    }
+    loadedView.config = false;
+    ensureView('config');
+  }
+
+  let SMTP_ROWS = [];
+  function renderSmtp(d) {
+    const smtp = d.smtp || {};
+    SMTP_ROWS = (smtp.accounts || []).map((a) => Object.assign({}, a));
+    if (!SMTP_ROWS.length) {
+      $('smtpBox').innerHTML = '<p class="empty">没有配置 SMTP：找回密码 / 验证码邮件发不出去。</p>';
+      return;
+    }
+    $('smtpBox').innerHTML = '<div id="smtpRows">' + SMTP_ROWS.map((a, i) => smtpRowHtml(a, i)).join('')
+      + '</div>';
+    bindSmtpRemove();
+  }
+
+  function smtpRowHtml(a, i) {
+    const f = (name, val, w, type) => '<input type="' + (type || 'text') + '" style="width:' + w
+      + '" value="' + esc(val == null ? '' : val) + '" data-smtp-row="' + i
+      + '" data-field="' + name + '">';
+    return '<div class="toolbar" style="gap:8px;flex-wrap:wrap;align-items:center;'
+      + 'border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:8px">'
+      + '<span class="note">服务器</span>' + f('host', a.host, '150px')
+      + '<span class="note">端口</span>' + f('port', a.port, '74px', 'number')
+      + '<span class="note">账号</span>' + f('user', a.user, '180px')
+      + '<span class="note">密码</span>' + f('pass', a.pass, '150px', 'password')
+      + '<span class="note">发件人</span>' + f('from', a.from, '180px')
+      + '<label class="note" style="display:inline-flex;gap:6px;align-items:center">'
+      + '<input type="checkbox" style="width:auto" data-smtp-row="' + i + '" data-field="use_ssl"'
+      + (a.use_ssl !== false ? ' checked' : '') + '>SSL</label>'
+      + '<button class="ghost btn-sm btn-danger" data-smtp-rm="' + i + '">删除</button>'
+      + '</div>';
+  }
+
+  function bindSmtpRemove() {
+    const box = $('smtpBox');
+    if (box._bound) return;
+    box._bound = true;
+    box.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-smtp-rm]');
+      if (!btn) return;
+      const i = Number(btn.dataset.smtpRm);
+      // 先把界面上已改的值收回 SMTP_ROWS，否则「删第二行」会把第一行的改动丢掉
+      collectSmtp();
+      SMTP_ROWS.splice(i, 1);
+      $('smtpBox').innerHTML = SMTP_ROWS.length
+        ? '<div id="smtpRows">' + SMTP_ROWS.map((a, k) => smtpRowHtml(a, k)).join('') + '</div>'
+        : '<p class="empty">还没有 SMTP 账户。点下面「添加账户」。</p>';
+    });
+  }
+
+  function collectSmtp() {
+    const rows = SMTP_ROWS.map((a) => Object.assign({}, a));
+    document.querySelectorAll('#smtpBox [data-smtp-row]').forEach((el) => {
+      const i = Number(el.dataset.smtpRow);
+      if (!rows[i]) return;
+      const f = el.dataset.field;
+      if (el.type === 'checkbox') rows[i][f] = el.checked;
+      else rows[i][f] = el.value.trim();
+    });
+    return rows;
+  }
+
+  async function saveSmtp() {
+    const accounts = collectSmtp().filter((a) => a.host && a.user);
+    $('smtpMeta').textContent = '保存中…';
+    let r;
+    try {
+      r = await api('/api/admin/config/smtp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts: accounts }),
+      });
+    } catch (e) {
+      $('smtpMeta').textContent = '';
+      toast('保存失败：' + e.message, 4200);
+      return;
+    }
+    if (r && r.ok) {
+      $('smtpMeta').textContent = '已保存';
+      toast('邮件配置已保存（本站生效，用于找回密码 / 验证码）');
+    } else {
+      $('smtpMeta').textContent = '';
+      toast('保存失败：' + ((r && r.error) || '未知原因'), 4200);
+    }
+    loadedView.config = false;
+    ensureView('config');
+  }
+
+  $('plansSave').addEventListener('click', () => savePlans().catch((e) => toast(e.message, 4200)));
+  $('fqSave').addEventListener('click', () => saveFreeQuota().catch((e) => toast(e.message, 4200)));
+  $('smtpSave').addEventListener('click', () => saveSmtp().catch((e) => toast(e.message, 4200)));
+  $('smtpAdd').addEventListener('click', () => {
+    collectSmtp();
+    SMTP_ROWS.push({ host: '', port: 465, user: '', pass: '', from: '', from_name: '', use_ssl: true });
+    $('smtpBox').innerHTML = '<div id="smtpRows">'
+      + SMTP_ROWS.map((a, k) => smtpRowHtml(a, k)).join('') + '</div>';
+  });
 
   // ---------------- Cookie 池 ----------------
   async function loadCookies() {
     const d = await api('/api/admin/cookies');
     const s = d.summary || {};
+    $('ckMeta').textContent = d.source_label || '';
     $('cookieKpis').innerHTML = kpi(s.accounts != null ? s.accounts : '—', '账号数')
       + kpi(s.entries != null ? s.entries : '—', 'Cookie 条目')
       + kpi(s.valid != null ? s.valid : '—', '已验真有效')
@@ -1076,19 +1580,160 @@
       const st = gap ? '<span class="chip bad">缺口</span>'
         : (r.valid ? '<span class="chip good">有效</span>'
           : (r.invalid ? '<span class="chip warn">失效</span>' : '<span class="chip mute">未验真</span>'));
+      const dq = ' data-domain="' + esc(r.domain) + '"';
       return '<tr><td>' + esc(r.domain) + (r.stale ? '<br><span class="note">超 7 天未更新</span>' : '') + '</td>'
         + '<td>' + st + '</td>'
         + '<td class="real">' + esc(r.accounts != null ? r.accounts : '—') + '</td>'
         + '<td class="real">' + esc(r.entries != null ? r.entries : '—') + '</td>'
         + '<td class="real">' + esc(r.valid || 0) + ' / ' + esc(r.invalid || 0) + ' / ' + esc(r.unknown || 0) + '</td>'
-        + '</tr>';
+        + '<td class="acts">'
+        + '<button class="ghost btn-sm" data-ckact="inject"' + dq + '>补 Cookie</button>'
+        + '<button class="ghost btn-sm" data-ckact="verify"' + dq + '>验真</button>'
+        + '</td></tr>';
     });
     $('cookieBox').innerHTML = table(
-      ['站点', '状态', '账号', '条目', '有效 / 失效 / 未验真'], rows, '池子是空的');
+      ['站点', '状态', '账号', '条目', '有效 / 失效 / 未验真', '操作'], rows, '池子是空的');
     $('cookieBox').innerHTML += '<p class="note" style="margin-top:12px">池目录 '
       + esc(d.pool_dir || '—') + ' · 验真过期 ' + esc(Math.round((d.verify_ttl || 0) / 3600))
       + ' 小时 · 「未验真」不等于不可用，只是还没联网确认过。</p>';
+    bindCookieActions();
   }
+
+  function bindCookieActions() {
+    const box = $('cookieBox');
+    if (box._bound) return;              // 事件委托只绑一次，重渲染不叠加监听
+    box._bound = true;
+    box.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-ckact]');
+      if (!btn) return;
+      const act = btn.dataset.ckact;
+      const domain = btn.dataset.domain || '';
+      if (act === 'inject') injectCookie(domain).catch((err) => toast('注入失败：' + err.message, 4200));
+      else if (act === 'verify') verifyCookies(domain).catch((err) => toast('验真失败：' + err.message, 4200));
+    });
+  }
+
+  // 补 Cookie：粘一长串 → 后端先联网验真再入池（死 Cookie 会被直接拒，
+  // 因为池是全体用户共用的，一条失效的会让整站解析跟着崩）。
+  async function injectCookie(domain) {
+    if (!domain) {
+      domain = await askText('补哪个站点的 Cookie？',
+        '填根域名，例如 bilibili.com / xiaohongshu.com。不在白名单里会被后端拒绝。',
+        { placeholder: 'bilibili.com', okText: '下一步' });
+      if (!domain) return;
+    }
+    const header = await askText('粘贴 ' + domain + ' 的 Cookie',
+      '从浏览器开发者工具 Network 里复制整串请求头 Cookie（k=v; k2=v2）。'
+      + '提交后会先联网验真，无效直接拒绝入池。',
+      { multiline: true, okText: '验真并入池', placeholder: 'SESSDATA=...; bili_jct=...' });
+    if (!header) return;
+    $('ckMeta').textContent = '正在验真并入池，可能要十几秒…';
+    const r = await api('/api/admin/cookies/inject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: domain, header: header }),
+    });
+    if (r && r.ok === false) {
+      $('ckMeta').textContent = '';
+      toast('没入池：' + (r.error || '验真未通过'), 5200);
+      return;
+    }
+    toast('已入池（' + (r.target === 'cloud' ? '云端池，网页版立刻生效' : '本机池') + '）', 4200);
+    $('ckMeta').textContent = '';
+    loadedView.cookies = false;
+    ensureView('cookies');
+  }
+
+  // 验真：不传 domain = 全量。云端验真才算数 —— 解析发生在云端，同一 IP 验出的
+  // 结论才有意义（本机家宽验出来的「有效」到线上可能仍被拒）。
+  async function verifyCookies(domain) {
+    const tip = domain ? ('正在验真 ' + domain + '…') : '正在全量验真，站点多时要几十秒…';
+    $('ckMeta').textContent = tip;
+    const r = await api('/api/admin/cookies/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(domain ? { domain: domain } : {}),
+    });
+    if (r && r.ok === false) {
+      $('ckMeta').textContent = '';
+      toast('验真失败：' + (r.error || '未知原因'), 5200);
+      return;
+    }
+    const rows = (r && r.results) || [];
+    const ok = rows.filter((x) => x.status === 'valid').length;
+    const bad = rows.filter((x) => x.status === 'invalid').length;
+    toast('验真完成：有效 ' + ok + ' · 失效 ' + bad + ' · 共 ' + rows.length + ' 条', 5200);
+    $('ckMeta').textContent = '';
+    loadedView.cookies = false;
+    ensureView('cookies');
+  }
+  $('ckInject').addEventListener('click', () => injectCookie('')
+    .catch((err) => toast('注入失败：' + err.message, 4200)));
+  $('ckVerifyAll').addEventListener('click', () => verifyCookies('')
+    .catch((err) => toast('验真失败：' + err.message, 4200)));
+
+  // ---------------- 每日对账 (2026-11-01 接真数据) ----------------
+  // 数据来自授权中心 recon（每 10 分钟自扫）：已付款订单 × 自动发货记录 × 卡密核销
+  // 三方交叉核对。以前这一页只有一句「未接入」的说明，等于白占一个页签。
+  const RECON_MIS_KIND = {
+    paid_not_granted: '付了钱没发货',
+    grant_no_order: '发了货找不到订单',
+    amount_mismatch: '套餐金额对不上',
+  };
+
+  async function loadRecon() {
+    const days = Number($('reconDays').value || 7);
+    $('reconMeta').textContent = '正在向授权中心拉取…';
+    let d;
+    try {
+      d = await api('/api/license-recon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: days }),
+      });
+    } catch (e) {
+      $('reconMeta').textContent = '拉取失败：' + e.message;
+      return;
+    }
+    if (!d || d.ok === false) {
+      $('reconMeta').textContent = '对账不可用：'
+        + ((d && (d.error || d.detail)) || '未知原因');
+      return;
+    }
+    const rows = d.day_rows || [];
+    const mis = d.mismatches || [];
+    const used = Number(d.days || days);
+    // 三层链路（本站 → ECS → 授权中心）各自有区间上限：任一没放开就静默截断，
+    // 所以要用**服务端回传的 days** 反查实际生效区间，不一致就明确告警。
+    $('reconMeta').textContent = '核对时刻 ' + fmtTs(d.checked_at)
+      + (used !== days ? ' · 实际只生效近 ' + used + ' 天（区间被链路截断）' : '');
+    $('reconKpis').innerHTML = kpi('¥' + Number(d.income_yuan_total || 0).toFixed(2), '线上入账')
+      + kpi(rows.reduce((s, x) => s + (x.paid_orders || 0), 0), '已付订单')
+      + kpi(mis.length, '对账差异')
+      + kpi(rows.reduce((s, x) => s + (x.redeems || 0), 0), '卡密核销');
+    $('reconBox').innerHTML = table(
+      ['日期', '线上入账', '订单数', '发货失败', '自动发货', '卡密核销', '差异'],
+      rows.map((x) => '<tr><td>' + esc(x.date) + '</td>'
+        + '<td class="real">¥' + Number(x.income_yuan || 0).toFixed(2) + '</td>'
+        + '<td class="real">' + esc(x.paid_orders || 0) + '</td>'
+        + '<td class="real">' + esc(x.grant_failed || 0) + '</td>'
+        + '<td class="real">' + esc(x.auto_grants || 0) + '</td>'
+        + '<td class="real">' + esc(x.redeems || 0) + '</td>'
+        + '<td class="real">' + (x.mismatch
+          ? '<span class="chip bad">' + esc(x.mismatch) + '</span>'
+          : '<span class="chip good">0</span>') + '</td></tr>'),
+      '这个区间没有账目');
+    $('reconMisBox').innerHTML = mis.length
+      ? '<p class="sub-h">需要逐条核对（' + mis.length + ' 条）</p>' + table(
+        ['类型', '账号', '说明'],
+        mis.map((m) => '<tr><td><span class="chip bad">'
+          + esc(RECON_MIS_KIND[m.kind] || m.kind) + '</span></td>'
+          + '<td>' + esc(m.email || '—') + '</td>'
+          + '<td>' + esc(m.detail || '') + '</td></tr>'), '')
+      : '';
+  }
+  $('reconRun').addEventListener('click', () => loadRecon());
+  $('reconDays').addEventListener('change', () => loadRecon());
 
   async function loadInsights() {
     // 两块互不依赖，各拉各的；一个挂了另一个照样出数。

@@ -474,3 +474,52 @@ def pay_query_remote(order_id: str, base_url: str = PAY_BASE,
     """订单状态轮询。返回 {ok, order_id, status: PENDING|PAID|GRANT_FAILED}。"""
     return _post("/api/pay/query", {"order_id": order_id},
                  base_url, timeout, opener)
+
+
+# ── 管理端写 / 深度查询（2026-11-01）─────────────────────────────────────────
+# 背景：网页后台此前只改本机 plans.json，而三端的放行与收款判定都以授权中心为准
+# ⇒ 后台改价/改额度「保存成功但线上没变」。这几个函数把写通道补齐，让网页后台
+# 与桌面 App 后台同权（同一套中心契约，不另立一套语义）。
+_UNSET: Any = object()
+
+
+def free_quota_set_remote(token: str, cloud_lifetime: Any = _UNSET,
+                          mode: Any = _UNSET,
+                          daily_free_limits: Any = _UNSET,
+                          daily_member_limits: Any = _UNSET,
+                          base_url: Optional[str] = None,
+                          timeout: float = 10.0) -> dict[str, Any]:
+    """管理员下发「免费额度」覆盖到授权中心。
+
+    🔴 参数语义（键**在不在** payload 里决定中心动不动这一项）：
+      · 不传（默认 `_UNSET`）→ 该键不进 payload → 中心**不动**这一项；
+      · 传 `None`            → 显式清除该覆盖（回默认）；
+      · 传具体值             → 设置该覆盖。
+    因此不能把参数无条件塞进 payload —— 只想改 mode 时会把 cloud_lifetime 清成 null。
+    """
+    payload: dict[str, Any] = {"token": token}
+    if cloud_lifetime is not _UNSET:
+        payload["cloud_lifetime"] = cloud_lifetime
+    if mode is not _UNSET:
+        payload["mode"] = mode
+    if daily_free_limits is not _UNSET:
+        payload["daily_free_limits"] = daily_free_limits
+    if daily_member_limits is not _UNSET:
+        payload["daily_member_limits"] = daily_member_limits
+    return _post("/api/license/free_quota_set", payload, base_url, timeout)
+
+
+def recon_remote(admin_token: str, days: int = 7,
+                 base_url: Optional[str] = None,
+                 timeout: float = 15.0) -> dict[str, Any]:
+    """管理员拉每日入账/发货对账报告（`recon`）。days 由调用方钳制。"""
+    return _post("/api/license/recon",
+                 {"token": admin_token, "days": int(days or 7)},
+                 base_url, timeout)
+
+
+def stat_query_remote(admin_token: str, base_url: Optional[str] = None,
+                      timeout: float = 12.0) -> dict[str, Any]:
+    """管理员查安装 / 插件用量聚合（`stat_query`，按平台）。只读，不写 state。"""
+    return _post("/api/license/stat_query", {"token": admin_token},
+                 base_url, timeout)

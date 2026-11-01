@@ -336,7 +336,8 @@ def save_plan_overrides(data: dict[str, Any]) -> dict[str, Any]:
         return existing
 
 
-_SAVE_TABLE_KEYS = ("download_plans", "ai_plans", "credit_packs", "credit_costs", "free_trial")
+_SAVE_TABLE_KEYS = ("download_plans", "ai_plans", "credit_packs", "credit_costs",
+                    "free_trial", "free_quota")
 
 
 def _overlay_plans(defaults: dict[str, Any], override: Any) -> dict[str, Any]:
@@ -566,6 +567,121 @@ def effective_plans() -> dict[str, dict[str, Any]]:
         "credit_packs": _overlay_plans(
             _overlay_plans(CREDIT_PACKS, ov.get("credit_packs")), cloud.get("credit_packs")),
     }
+
+
+# ── 下发云端（2026-11-01）────────────────────────────────────────────────────
+# 网页后台此前只能改本机 plans.json，而三端的**收款估价与额度放行判定都在授权
+# 中心** ⇒ 后台保存成功、线上价格没变。以下三个函数把写通道补齐：网页后台从此
+# 与桌面 App 后台同权，改动对 Mac / Windows / 网页三端同时生效。
+
+
+def local_plans() -> dict[str, dict[str, Any]]:
+    """本机意图表：代码常量 ← 本机 plans.json 覆盖层（**不含云端**）。
+
+    🔴 下发云端不能用 effective_plans()：后者把云端旧值排在**最后**（优先级最高），
+    刚保存的本机改动会被云端旧值盖回去，表现为「保存成功但价格没变」。
+    """
+    ov = load_plan_overrides()
+    return {
+        "download_plans": _overlay_plans(DOWNLOAD_PLANS, ov.get("download_plans")),
+        "ai_plans": _overlay_plans(AI_PLANS, ov.get("ai_plans")),
+        "credit_packs": _overlay_plans(CREDIT_PACKS, ov.get("credit_packs")),
+    }
+
+
+def push_payload_plans() -> dict[str, dict[str, Any]]:
+    """下发用的整表：代码默认 ← **云端当前值** ← 本机本次改动。
+
+    🔴 2026-11-01 必须有这一层，否则会静默改错价：授权中心的 `plans_set` 是
+    **整表覆盖**，而网页本机 plans.json 可能从来没存过东西。此时若直接发
+    `local_plans()`（= 代码默认 + 本次改动），其余档位会被推回代码默认值 ——
+    线上实测云端售价是 0.6 / 1.5 / 2.99 / 9.9 / 49.9 / 89.9，代码默认是
+    1.9 / 4.9 / 9.9 / 29.8 / 99.9 / 179，一次「改一个档」就会把整体价格抬高。
+    以云端现值打底、只让本次改动覆盖，才既保留其他档、又让改动生效。
+    """
+    ov = load_plan_overrides()
+    cloud = cloud_plan_overrides() or {}
+
+    def _base(defaults: dict[str, Any], cat: str) -> dict[str, Any]:
+        return _overlay_plans(_overlay_plans(defaults, cloud.get(cat)), ov.get(cat))
+
+    return {
+        "download_plans": _base(DOWNLOAD_PLANS, "download_plans"),
+        "ai_plans": _base(AI_PLANS, "ai_plans"),
+        "credit_packs": _base(CREDIT_PACKS, "credit_packs"),
+    }
+
+
+def _admin_token() -> str:
+    try:
+        import admin_store
+
+        return admin_store._license_admin_token() or ""
+    except Exception:  # noqa: BLE001 — 令牌读取失败按「未配置」处理
+        return ""
+
+
+def push_plans_to_cloud() -> dict[str, Any]:
+    """把本机意图套餐表下发授权中心（后台保存后调用）。返回同步状态，绝不抛出。
+
+    云端不可达时后台仍算保存成功，但会如实回一个 `ok=False` —— 前端必须把这条
+    状态显示出来，不能让管理员以为三端都改了。
+    """
+    token = _admin_token()
+    if not token:
+        return {"ok": False, "reason": "no_admin_token",
+                "hint": "网页服务未配置 VDL_LICENSE_ADMIN_TOKEN，本次改动只落在本机"}
+    try:
+        import license_client
+
+        payload = push_payload_plans()   # 云端现值打底 + 本机本次改动
+        r = license_client._post(  # noqa: SLF001 — 同仓复用统一 POST 通道
+            "/api/license/plans_set",
+            {"token": token, "plans": payload},
+            None, 10.0,
+        )
+        if isinstance(r, dict) and r.get("ok"):
+            # 主动刷新缓存：本机改完立刻一致，不用等 15s TTL（与前端回显同源）
+            _CLOUD_PLANS_CACHE["ts"] = time.time()
+            _CLOUD_PLANS_CACHE["plans"] = r.get("plans") or {}
+            return {"ok": True, "synced_at": r.get("updated_at")}
+        return {"ok": False, "reason": str((r or {}).get("error") or "cloud_rejected")}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"error: {e}"}
+
+
+def push_free_quota_to_cloud() -> dict[str, Any]:
+    """把本机 `free_quota` 覆盖下发授权中心（后台保存后调用）。绝不抛出。
+
+    🔴 键语义：**键不存在** = 管理员没配过 → 不动云端该项（避免抹掉别的机器配的
+    覆盖）；键存在但为 None = 显式「恢复默认」→ 下发 null 让中心清除覆盖。
+    """
+    token = _admin_token()
+    if not token:
+        return {"ok": False, "reason": "no_admin_token"}
+    try:
+        fq = (load_plan_overrides().get("free_quota") or {})
+        kwargs: dict[str, Any] = {}
+        if "cloud_lifetime" in fq:
+            kwargs["cloud_lifetime"] = fq.get("cloud_lifetime")
+        if "mode" in fq:
+            kwargs["mode"] = fq.get("mode")
+        for key in ("daily_free_limits", "daily_member_limits"):
+            if key in fq:
+                kwargs[key] = fq.get(key)
+        if not kwargs:
+            return {"ok": True, "reason": "no_override", "effective": {}}
+        import license_client
+
+        r = license_client.free_quota_set_remote(token, **kwargs)
+        if isinstance(r, dict) and r.get("ok"):
+            eff = r.get("free_quota_overrides")
+            if isinstance(eff, dict):
+                _CLOUD_PLANS_CACHE["free_quota"] = eff
+            return {"ok": True, "effective": r.get("effective_cloud_limits") or {}}
+        return {"ok": False, "reason": str((r or {}).get("error") or "cloud_rejected")}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"error: {e}"}
 
 
 # ── 档位售卖状态（2026-10-03）：模式 / 秒杀 / 限量 / 活动时间 ──────────────────

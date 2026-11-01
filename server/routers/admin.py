@@ -187,6 +187,33 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=401, detail="未授权：需要管理员权限")
 
 
+def require_super_backend(request: Request) -> None:
+    """改「三端生效值」的闸门：只认 2 小时的后台令牌（adm 作用域）。
+
+    🔴 为什么不能直接用 require_super（2026-11-01 实测发现）：`require_super` 走
+    `get_current_user_id` → `token_from_header`，而它**两种令牌都收** —— 这是为
+    桌面 App 后台刻意留的兼容（App 拿普通令牌进后台）。后果是：前台 30 天的普通
+    登录会话也能改套餐价格 / 免费额度，会话一旦泄露就能改三端售价，而那条会话
+    既没有 2 小时过期，也没有登录失败限流。
+    改价 / 改额度属于「影响所有人钱包」的写操作，必须由后台登录（/admin/login）
+    发起 —— 这里只认 adm 令牌，普通登录态一律 403。
+    """
+    from fastapi import HTTPException
+    import app as _app  # noqa: E402 - 共享内核（跨源校验）
+    if _app._cross_site_rejected(request):
+        raise HTTPException(status_code=403, detail="拒绝来自外部站点的跨源请求")
+    import auth_store
+    raw = request.headers.get("Authorization") or ""
+    tok = raw[7:].strip() if raw.startswith("Bearer ") else ""
+    uid = auth_store.verify_admin_token(tok) if tok else None
+    if not uid:
+        raise HTTPException(
+            status_code=403,
+            detail="改价 / 改额度需要先在 /admin/login 登录后台（普通登录态不够）")
+    if not user_is_admin(uid):
+        raise HTTPException(status_code=403, detail="未授权：需要超级管理员权限")
+
+
 def require_super(request: Request) -> None:
     """写操作闸门：只有**唯一超管**放行（2026-10-22 权限拆两级，自桌面端移植）。
 
@@ -636,7 +663,29 @@ def admin_audit_log(request: Request = None, limit: int = 200) -> dict[str, Any]
 @router.get("/api/admin/config")
 def admin_config(request: Request = None) -> dict[str, Any]:
     require_admin(request)
-    return {"ok": True, **system_config()}
+    out: dict[str, Any] = {"ok": True, **system_config()}
+    # 2026-11-01：把「免费额度」的本机意图 + 云端真值一并给出，前端才能显示
+    # 「本机设了 X / 云端生效 X」—— 两者不一致时管理员要能一眼看出来。
+    try:
+        import membership
+
+        out["free_quota_local"] = membership.load_plan_overrides().get("free_quota") or {}
+        out["free_quota_cloud"] = membership.cloud_free_quota_overrides() or {}
+        out["cloud_sync"] = {"ready": bool(membership._admin_token())}
+        # 前端要按资源键渲染「免费额度」编辑网格；键名只有后端知道，别让前端
+        # 自己猜（猜错就会出现「界面上少一项、那一项永远改不了」）。
+        # 🔴 必须取**并集**：代码默认表里的键（本地功能）与云端覆盖里的键
+        # （云函数）不是同一套，只给其中一套就会漏掉另一半，漏掉的那半改不了。
+        _fqc = out.get("free_quota_cloud") or {}
+        _keys = set(membership.DAILY_QUOTA_LIMITS) | set(membership.FREE_DAILY_LIMITS)
+        _keys |= set((_fqc.get("daily_free_limits") or {}))
+        _keys |= set((_fqc.get("daily_member_limits") or {}))
+        out["quota_keys"] = sorted(_keys)
+        out["free_daily_defaults"] = dict(membership.FREE_DAILY_LIMITS)
+        out["member_daily_defaults"] = dict(membership.DAILY_QUOTA_LIMITS)
+    except Exception:  # noqa: BLE001 — 附加信息拿不到不影响主配置
+        out["cloud_sync"] = {"ready": False}
+    return out
 
 
 @router.post("/api/admin/config/smtp")
@@ -650,21 +699,98 @@ def admin_config_smtp(payload: dict[str, Any] = Body(...), request: Request = No
 
 @router.post("/api/admin/config/plans")
 def admin_config_plans(payload: dict[str, Any] = Body(...), request: Request = None) -> dict[str, Any]:
-    require_super(request)
-    out = save_plan_overrides(payload or {})
-    # 🔴 2026-10-06 诚实回报：云端终身免费次数的**放行判定在授权中心**，而中心写入
-    #   端点 /api/license/free_quota_set 要求**桌面端的 license_admin 令牌** ——
-    #   网页版没有这套令牌（只有本站 superuser），因此这里**无法**下发覆盖。
-    #   与其静默返回 ok 让管理员以为改了两端，不如如实说明「只改了本机缓存」。
-    #   要改云端放行上限，请到桌面端 App 后台保存（那里会下发中心）。
-    if isinstance(payload, dict) and "free_quota" in payload:
-        out = dict(out)
-        out["cloud_free_quota"] = {
-            "ok": False,
-            "reason": "web_admin_cannot_push_center",
-            "hint": "云端放行上限以授权中心为准，请在桌面端 App 后台修改并保存",
-        }
+    require_super_backend(request)
+    out = dict(save_plan_overrides(payload or {}))
+    # 🔴 2026-11-01 改口径：此前这里**不下发**云端，只写本机 plans.json，并诚实地
+    #   回一句「请去桌面端改」。但三端的收款估价与放行判定都在授权中心 ⇒ 网页后台
+    #   改价「保存成功、线上没变」。现在保存即下发，与桌面 App 后台同权。
+    #   仍保留云端回执：`cloud_plans.ok=False` 时前端必须显示「只改了本机」。
+    if out.get("ok"):
+        try:
+            import membership
+
+            out["cloud_plans"] = membership.push_plans_to_cloud()
+            if isinstance(payload, dict) and "free_quota" in payload:
+                out["cloud_free_quota"] = membership.push_free_quota_to_cloud()
+        except Exception as exc:  # noqa: BLE001 — 下发失败不该把保存结果吞掉
+            out["cloud_plans"] = {"ok": False, "reason": f"error: {exc}"}
     return out
+
+
+@router.post("/api/admin/config/free-quota")
+def admin_config_free_quota(payload: dict[str, Any] = Body(...),
+                            request: Request = None) -> dict[str, Any]:
+    """超级管理员：改「免费额度」并下发授权中心（2026-11-01）。
+
+    与套餐价格同一套路：本机 plans.json 覆盖层只作意图/缓存，云端才是三端放行
+    判定的真源。`free_quota` 形状 = {cloud_lifetime, mode, daily_free_limits,
+    daily_member_limits}；键**不存在** = 不动该项，值为 null = 恢复默认。
+    """
+    require_super_backend(request)
+    fq = (payload or {}).get("free_quota")
+    if not isinstance(fq, dict):
+        return {"ok": False, "error": "free_quota 必须是对象"}
+    out = dict(save_plan_overrides({"free_quota": fq}))
+    if out.get("ok"):
+        try:
+            import membership
+
+            out["cloud_free_quota"] = membership.push_free_quota_to_cloud()
+        except Exception as exc:  # noqa: BLE001
+            out["cloud_free_quota"] = {"ok": False, "reason": f"error: {exc}"}
+    return out
+
+
+@router.get("/api/admin/users/{user_id}/usage")
+def admin_user_usage(user_id: str, request: Request = None) -> dict[str, Any]:
+    """超级管理员：查单个账号的完整档案（2026-11-01，网页后台补齐）。
+
+    数据源是**授权中心**（三端账号的唯一真源），不是本机镜像 —— 网页版没有
+    本机账号表，代理本机会统统「用户不存在」。返回含：权益视图 / 订单 /
+    积分流水 / 人工调账 / 近一年每日用量 / 设备 / 云端资料元数据。
+    """
+    require_admin(request)
+    try:
+        import admin_store
+        import license_client
+
+        token = admin_store._license_admin_token()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"取管理令牌失败：{exc}"}
+    if not token:
+        return {"ok": False, "error": "网页服务未配置 VDL_LICENSE_ADMIN_TOKEN"}
+    try:
+        r = license_client.usage_remote(user_id, token, timeout=12.0)
+    except Exception as exc:  # noqa: BLE001 — 中心不可达不该 500
+        return {"ok": False, "error": f"授权中心不可达：{exc}"}
+    if isinstance(r, dict) and r.get("ok"):
+        return {"ok": True, "usage": r}
+    return {"ok": False, "error": str((r or {}).get("error") or "云端未找到该账号"),
+            "usage": r if isinstance(r, dict) else None}
+
+
+@router.get("/api/admin/install-stats")
+def admin_install_stats(request: Request = None) -> dict[str, Any]:
+    """超级管理员：三端安装 / 插件用量聚合（`stat_query`，只读）。
+
+    原来只有桌面 App 后台能看，网页后台看不到「装了多少台」。数据来自授权中心
+    的心跳/登录设备记录，按平台聚合。
+    """
+    require_admin(request)
+    try:
+        import admin_store
+        import license_client
+
+        token = admin_store._license_admin_token()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"取管理令牌失败：{exc}"}
+    if not token:
+        return {"ok": False, "error": "网页服务未配置 VDL_LICENSE_ADMIN_TOKEN"}
+    try:
+        r = license_client.stat_query_remote(token, timeout=15.0)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"授权中心不可达：{exc}"}
+    return r if isinstance(r, dict) else {"ok": False, "error": "中心返回异常"}
 
 
 # ── AI 积分成本 / 免费试用策略（2026-10-05 与桌面端拉齐）─────────────────────
