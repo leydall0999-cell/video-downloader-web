@@ -1493,7 +1493,7 @@ def _nginx_log_paths(max_files: int = 40) -> list:
 _NGINX_TAIL_BYTES = 32 * 1024 * 1024
 
 
-def _iter_nginx_log_lines(per_file_cap: int = 20000):
+def _iter_nginx_log_lines(per_file_cap: int = 100000):
     """逐行产出访问日志（.gz 自动解压），**绝不把整份日志读进内存**。
 
     🔴🔴 2026-11-01 事故：旧实现是 `f.readlines()[-cap:]` —— 先把整份文件读进内存
@@ -1503,6 +1503,9 @@ def _iter_nginx_log_lines(per_file_cap: int = 20000):
       · 明文文件：seek 到「末尾 _NGINX_TAIL_BYTES」处、丢掉被截断的半行，逐行 yield，
         内存 O(1)；
       · .gz：流式解压，只用 deque 留末尾 per_file_cap 行，内存 O(cap)。
+    🔴 per_file_cap 是 100000 而不是以前的 20000：实测最忙的一天有 28,239 行，
+       20,000 会**静默截掉前几天日志的头部**，「近 30 天」平白少算约 2 万条请求。
+       只保留一个文件在 deque 里（约 25MB、出循环即释放），且整段扫描有全局锁串行。
     🔴 不要再改回 list：调用方只需要 for 循环，不需要「全部行」。
     """
     import gzip as _gz
