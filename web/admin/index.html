@@ -1111,11 +1111,27 @@
         : '<span class="note">—</span>';
       const ai = m.ai_active
         ? '<span class="tag cloud">' + esc(m.ai_plan || '生效中') + '</span>'
+          + (Number(m.ai_expire_at || 0) > 0
+            ? '<br><span class="note">至 ' + esc(fmtTs(m.ai_expire_at)) + '</span>' : '')
         : '<span class="note">—</span>';
       const idq = ' data-id="' + esc(m.user_id) + '"';
+      // 会员到期：取下载会员与 AI 会员里较晚的那个（多数账号只有一个）。
+      // 单独成一列的原因：原来到期时间只是挂在计划标签下面的灰色小字，扫列表时
+      // 很难一眼看出谁快到期；「还剩 N 天」是这个表格里唯一能直接排序判断的抓手。
+      const expTs = Math.max(Number(m.download_expire_at || 0), Number(m.ai_expire_at || 0));
+      let exp = '<span class="note">—</span>';
+      if (expTs > 0) {
+        // 用「毫秒差」判是否真过期，天数用 floor：「还剩 22.2 天」显示 22 天更符合直觉；
+        // 但不足一天时 floor 会是 0，不能因此判成已过期，单独给「今天到期」。
+        const msLeft = expTs * 1000 - Date.now();
+        const days = Math.floor(msLeft / 86400000);
+        const tail = msLeft <= 0 ? '已过期' : (days > 0 ? '还剩 ' + days + ' 天' : '今天到期');
+        exp = esc(fmtTs(expTs)) + '<br><span class="note">' + tail + '</span>';
+      }
       return '<tr><td>' + esc(m.identifier || m.user_id) + '</td>'
         + '<td>' + dl + '</td>'
         + '<td>' + ai + '</td>'
+        + '<td>' + exp + '</td>'
         + '<td class="real">' + esc(m.ai_credits_left != null ? m.ai_credits_left : '—') + '</td>'
         + '<td class="real">' + esc(m.permanent_credits != null ? m.permanent_credits : '—') + '</td>'
         + '<td class="real">' + esc(m.credits_total != null ? m.credits_total : '—') + '</td>'
@@ -1125,7 +1141,7 @@
         + '</td></tr>';
     });
     $('memBox').innerHTML = table(
-      ['账号', '下载会员', 'AI 会员', 'AI 余额', '永久积分', '合计', '操作'],
+      ['账号', '下载会员', 'AI 会员', '会员到期', 'AI 余额', '永久积分', '合计', '操作'],
       body, kw ? '没有匹配的账号' : '还没有任何权益记录');
     bindMemberActions();
   }
