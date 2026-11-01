@@ -523,3 +523,15 @@ def stat_query_remote(admin_token: str, base_url: Optional[str] = None,
     """管理员查安装 / 插件用量聚合（`stat_query`，按平台）。只读，不写 state。"""
     return _post("/api/license/stat_query", {"token": admin_token},
                  base_url, timeout)
+
+
+def platform_stats_remote(admin_token: str, base_url: Optional[str] = None,
+                          timeout: float = 12.0) -> dict[str, Any]:
+    """管理员查「端分布」（`platform_stats`）：网页版 / Mac 版 / Windows 版。
+
+    与 `stat_query_remote` 的区别：那边只认 device.platform，网页版设备没有这个
+    字段会全部落进 unknown；这个接口额外用 `fp` 前缀（web-）与主机名兜底，
+    才能把网页版正确归堆，并拆出网页版的系统 / 浏览器分布。只读，不写 state。
+    """
+    return _post("/api/license/platform_stats", {"token": admin_token},
+                 base_url, timeout)

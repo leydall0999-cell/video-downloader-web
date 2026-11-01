@@ -793,6 +793,55 @@ def admin_install_stats(request: Request = None) -> dict[str, Any]:
     return r if isinstance(r, dict) else {"ok": False, "error": "中心返回异常"}
 
 
+# 端分布缓存：设备画像变化很慢（登录 / 心跳才更新），没必要每次刷后台都打一次
+# 授权中心；60 秒对看板足够新鲜。
+_PLAT_CACHE: dict = {"t": 0.0, "data": None}
+_PLAT_TTL = 60.0
+
+
+@router.get("/api/admin/platforms")
+def admin_platforms(request: Request = None) -> dict[str, Any]:
+    """超级管理员：端分布 —— 网页版 / Mac 版 / Windows 版各多少台。
+
+    为什么必须单独有这个接口：运维页的「设备」列来自 nginx 访问日志的 UA，而桌面
+    App 的请求 UA 是 `python-requests`，**Mac 版与 Windows 版一模一样**，日志层面
+    永远分不出来。真实端只能问授权中心的设备画像（登录时上报 platform + 版本号）。
+
+    老版本 App 没上报 platform，按主机名兜底（DESKTOP-xxx / xxx.local）；两者都
+    认不出的落 unknown，前端显示「未识别」—— 不硬猜。
+    """
+    # 🔴 鉴权走运维那一套，不用本文件的 require_admin（2026-11-01 实测踩到）：
+    # require_admin 走 get_current_user_id → token_from_header，只认**普通登录令牌**
+    # （30 天），后台的 adm 令牌（2 小时）会直接被判未授权；本接口是被嵌在后台
+    # 「运维监控」页签里调的，与旁边 6 个接口必须同权 —— 统一用 core 的 _require_admin
+    # （认 adm 令牌 + 必须超管 / 或 X-Admin-Key / 或本机直连）。
+    from routers.core import _require_admin as _ops_guard
+    _ops_guard(request)
+    import time as _t
+
+    hit = _PLAT_CACHE.get("data")
+    if isinstance(hit, dict) and (_t.time() - float(_PLAT_CACHE.get("t") or 0)) < _PLAT_TTL:
+        return hit
+    try:
+        import admin_store
+        import license_client
+
+        token = admin_store._license_admin_token()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"取管理令牌失败：{exc}"}
+    if not token:
+        return {"ok": False, "error": "网页服务未配置 VDL_LICENSE_ADMIN_TOKEN"}
+    try:
+        r = license_client.platform_stats_remote(token, timeout=15.0)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"授权中心不可达：{exc}"}
+    if not isinstance(r, dict) or not r.get("ok"):
+        return r if isinstance(r, dict) else {"ok": False, "error": "中心返回异常"}
+    _PLAT_CACHE["t"] = _t.time()
+    _PLAT_CACHE["data"] = r
+    return r
+
+
 # ── AI 积分成本 / 免费试用策略（2026-10-05 与桌面端拉齐）─────────────────────
 # 这两张表都写在 plans.json 覆盖层，改完即时生效、不需要重启服务。
 # 网页版与桌面端**同一套语义**：各功能的积分单价由 plans.json 逐项覆盖，

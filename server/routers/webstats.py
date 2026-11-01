@@ -99,6 +99,17 @@ def _require_viewer(request: Request = None) -> None:
         key = (request.headers.get("X-Admin-Key") or "").strip() if request is not None else ""
         if key and key == admin_key:
             return
+    # 🔴 2026-11-01 修正：运维页整体嵌进后台之后，后台手里只有 adm 令牌（2 小时，
+    # adm 作用域），而这里的 require_admin 走 get_current_user_id → token_from_header，
+    # **只认 30 天普通登录令牌** ⇒ 后台里「网页转化」那一格永远 401「加载失败」。
+    # 与旁边 /api/admin/visits、/api/admin/events 保持同一套判定（core 的 _require_admin：
+    # adm 令牌 + 必须超管 / 或运维密钥 / 或本机直连）。
+    try:
+        from routers.core import _require_admin as _ops_guard
+        _ops_guard(request)
+        return
+    except Exception:  # noqa: BLE001 — 落到下面给更明确的 401
+        pass
     require_admin(request)
 
 

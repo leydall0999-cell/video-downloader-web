@@ -66,6 +66,17 @@
   /* 端分布三列 */
   .cols3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
   @media (max-width:640px){ .cols3 { grid-template-columns:1fr; } }
+  /* 端分布卡片：Mac / Windows / 网页版各一格。数字是「设备台数」，
+     和上面 KPI 的「请求次数」不是一个口径，标题里已写明。 */
+  .platrow { display:grid; grid-template-columns:repeat(auto-fit,minmax(116px,1fr)); gap:10px; }
+  .platcard { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .platcard b { display:block; font-size:21px; line-height:1.2; font-variant-numeric:tabular-nums; }
+  .platcard span { color:var(--muted); font-size:12px; }
+  .platcard small { display:block; color:var(--muted); font-size:11px; margin-top:2px; line-height:1.4; }
+  .platcard.p-mac b { color:var(--violet); }
+  .platcard.p-win b { color:var(--accent); }
+  .platcard.p-web b { color:var(--green); }
+  .platcard.p-unk b { color:var(--muted); }
   .mini { font-size:12.5px; }
   .mini .row { display:flex; align-items:center; gap:6px; padding:2px 0; }
   .mini .row .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -120,6 +131,27 @@
 <div class="wrap">
   <div class="col">
   <section class="panel">
+    <h2><span class="dot" style="background:var(--violet)"></span>端分布 · 谁在用哪一版<small id="platHint"></small></h2>
+    <div class="platrow" id="platCards"><div class="empty">加载中…</div></div>
+    <h3 class="sub">桌面端版本分布</h3>
+    <div class="mini" id="platVersions"></div>
+    <h3 class="sub">网页版细分（按设备）</h3>
+    <div class="cols3">
+      <div><div class="mini" id="platWebOs"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">系统</div></div>
+      <div><div class="mini" id="platWebBr"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">浏览器</div></div>
+      <div><div class="mini" id="platWebKind"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">形态（电脑/手机）</div></div>
+    </div>
+    <h3 class="sub">最近活跃的设备</h3>
+    <div class="recent"><table>
+      <thead><tr><th>端</th><th>设备</th><th>版本</th><th>账号</th><th style="text-align:right">最后活跃</th></tr></thead>
+      <tbody id="platRecent"></tbody>
+    </table></div>
+    <small class="note">数据来源：授权中心设备画像（登录 / 心跳时上报），<b>按设备台数计</b>，与上面「桌面 App」那格的请求次数不是同一口径。
+      为什么只能从这里看：桌面 App 的请求 UA 是 python-requests，<b>Mac 版与 Windows 版在访问日志里完全一样</b>，日志层面永远分不出来；
+      端身份只有设备画像（platform + 版本号）记得住。老版本 App 未上报 platform 的，按主机名兜底，仍认不出的显示「未识别」。</small>
+  </section>
+
+  <section class="panel">
     <h2><span class="dot"></span>网站访客<small id="visitRangeHint"></small></h2>
 
     <h3 class="sub">最近 24 小时请求量（每小时）</h3>
@@ -128,7 +160,7 @@
 
     <h3 class="sub">访问来自哪个端</h3>
     <div class="cols3">
-      <div><div class="mini" id="tblDevice"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">设备</div></div>
+      <div><div class="mini" id="tblDevice"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">端（按请求数）</div></div>
       <div><div class="mini" id="tblBrowser"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">浏览器</div></div>
       <div><div class="mini" id="tblOs"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">系统</div></div>
     </div>
@@ -270,6 +302,7 @@ async function load(){
     loadWebStats(key);        // 独立加载：失败只影响该面板，不牵连上面两块
     loadResolveDemand(key);   // 解析需求榜：同样独立，失败不牵连
     loadNotice(key);          // 会员公告：独立加载，失败不影响其它面板
+    loadPlatforms(key);       // 端分布：走授权中心，与 nginx 口径互补，同样独立
     toast('已刷新');
   } catch(err){
     toast('加载失败：' + err.message + '（密钥错误？）', true);
@@ -287,12 +320,79 @@ function renderKpis(v, e){
   $('kpis').innerHTML =
     box('真人访问 PV', num(h.pv), '页面级浏览', 'hl') +
     box('真人访客 UV', num(h.uv), '按 IP+UA 去重') +
-    box('电脑', num(dev['电脑']||0), '桌面浏览器') +
-    box('手机 / 平板', num((dev['手机']||0)+(dev['平板']||0)), '移动浏览器') +
-    box('桌面 App', num((c.desktop_app||{}).requests||0), '客户端轮询', '') +
+    // 「网页 · 电脑 / 手机」就是网页版的两个入口；「桌面 App」是 Mac + Win 的合计
+    // —— 客户端 UA 都是 python-requests，日志里无法再拆，拆端看下方「端分布」。
+    box('网页 · 电脑', num(dev['电脑']||0), '浏览器访问') +
+    box('网页 · 手机/平板', num((dev['手机']||0)+(dev['平板']||0)), '移动浏览器') +
+    box('桌面 App', num((c.desktop_app||{}).requests||0), 'Mac+Win 合计', '') +
     box('网页接口', num((c.web_api||{}).requests||0), '前端轮询') +
     box('脚本 / 其它', num((c.other||{}).requests||0), '爬虫·扫描·curl') +
     box('错误事件', num(evtN), grpN ? `归为 ${grpN} 类` : '无', evtN ? 'bad' : '');
+}
+
+// ── 端分布（2026-11-01）─────────────────────────────────────────────────────
+// 用户问「怎么看网页版 / Mac 版 / Windows 版」：nginx 日志里桌面 App 的请求 UA 是
+// python-requests，Mac 与 Windows **完全一样** ⇒ 日志层面分不出来，只能问授权中心
+// 的设备画像（登录时上报 platform + 版本号）。这里按「设备台数」展示，与上面 KPI
+// 的「请求次数」是两个口径，标题与脚注都已写明，别混着读。
+const sumObj = (o) => Object.values(o||{}).reduce((a,b)=>a+Number(b||0),0);
+
+async function loadPlatforms(key){
+  try {
+    const r = await fetch('/api/admin/platforms', {headers:{'X-Admin-Key':key}});
+    if(!r.ok) throw new Error('platforms '+r.status);
+    renderPlatforms(await r.json());
+  } catch(e){
+    $('platCards').innerHTML = `<div class="empty err">端分布加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderPlatforms(d){
+  if(!d || !d.ok){
+    $('platCards').innerHTML = `<div class="empty err">${esc((d && d.error) || '端分布不可用')}</div>`;
+    $('platHint').textContent = '';
+    return;
+  }
+  const P = {};
+  (d.platforms||[]).forEach(x=>{ P[x.platform] = x; });
+  const card = (cls, label, s) => {
+    const n = s ? s.devices : 0;
+    const tip = s ? `${s.users} 个账号 · 近 7 天活跃 ${s.active_7d} 台` : '暂无设备';
+    return `<div class="platcard ${cls}"><b>${num(n)}</b><span>${label}</span><small>${tip}</small></div>`;
+  };
+  $('platCards').innerHTML =
+    card('p-mac','Mac 版', P.macos) +
+    card('p-win','Windows 版', P.windows) +
+    card('p-web','网页版', P.web) +
+    (P.unknown && P.unknown.devices ? card('p-unk','未识别', P.unknown) : '');
+  $('platHint').textContent = `按设备计 · ${num(d.total_devices)} 台 / ${num(d.total_users)} 个账号`;
+
+  const vs = d.versions || {};
+  const vkeys = Object.keys(vs);
+  $('platVersions').innerHTML = vkeys.length
+    ? vkeys.map(v=>`<div class="row"><span class="nm">v${esc(v)}</span><span class="nn">${num(vs[v])} 台</span></div>`).join('')
+    : '<div class="empty">桌面端还没上报版本号（1.0.55 及以后会带）</div>';
+
+  $('platWebOs').innerHTML = miniBars(d.web_os, sumObj(d.web_os));
+  $('platWebBr').innerHTML = miniBars(d.web_browser, sumObj(d.web_browser));
+
+  // 形态：网页版里「电脑浏览器」与「手机/平板」各多少（系统名取自设备名）
+  const osd = d.web_os || {};
+  const mob = ['iPhone','iPad','Android','iOS','HarmonyOS'];
+  let phone = 0, pc = 0;
+  Object.entries(osd).forEach(([k,n])=>{ if(mob.some(m=>k.indexOf(m)>=0)) phone += n; else pc += n; });
+  const tot = pc + phone || 1;
+  $('platWebKind').innerHTML =
+    `<div class="row"><span class="nm">电脑浏览器</span><span class="nn">${num(pc)}</span></div><div class="track"><i style="width:${Math.max(2, Math.round(pc/tot*100))}%"></i></div>` +
+    `<div class="row"><span class="nm">手机 / 平板</span><span class="nn">${num(phone)}</span></div><div class="track"><i style="width:${Math.max(2, Math.round(phone/tot*100))}%"></i></div>`;
+
+  $('platRecent').innerHTML = (d.recent||[]).slice(0,12).map(r=>`<tr>
+      <td><span class="tag dev">${esc(r.label)}</span></td>
+      <td class="path" title="${esc(r.name)}">${esc(r.name)}</td>
+      <td>${r.version ? 'v'+esc(r.version) : '-'}</td>
+      <td class="path" title="${esc(r.email)}">${esc(r.email)}</td>
+      <td class="num">${ago(r.last_seen)}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="empty">无</td></tr>';
 }
 
 const MAX_ROWS = 6;
@@ -325,7 +425,17 @@ function renderVisits(v){
   }
 
   // 端分布三列
-  $('tblDevice').innerHTML  = miniBars(v.by_device,  v.total);
+  // 设备名统一口径（2026-11-01）：「电脑 / 手机 / 平板」其实就是网页版的两个入口，
+  // 直接叫「网页 · 电脑」才不会和「桌面 App」混为一谈；桌面 App 的 Mac/Win 在日志
+  // 里分不出来（UA 都是 python-requests），拆端请看上方「端分布」。
+  const DEV_LABEL = { '电脑':'网页 · 电脑', '手机':'网页 · 手机', '平板':'网页 · 平板',
+                      '桌面 App':'桌面 App', '脚本/机器':'脚本 / 机器', '未知':'未知' };
+  const relabel = (o) => {
+    const out = {};
+    Object.entries(o||{}).forEach(([k,v])=>{ const kk = DEV_LABEL[k] || k; out[kk] = (out[kk]||0) + v; });
+    return out;
+  };
+  $('tblDevice').innerHTML  = miniBars(relabel(v.by_device), v.total);
   $('tblBrowser').innerHTML = miniBars(v.by_browser, v.total);
   $('tblOs').innerHTML      = miniBars(v.by_os,      v.total);
 
