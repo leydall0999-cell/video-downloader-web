@@ -913,6 +913,34 @@ def _select_smtp_account(to_email: str) -> Optional[dict]:
     return accounts[0]
 
 
+# 发信配额：QQ 邮箱免费版每日约 50 封上限，被刷爆会触发发件人风控，连正常收信
+# 都可能受影响（是整个邮件通道一起挂，不是只丢那几封验证码）。因此做进程级自我
+# 保护：宁可对刷量的人说「太频繁」，也不要把当天额度烧光。
+# 计数在内存里，服务重启清零 —— 这条限制的目的是挡住「有人猛刷」，不是精确计费。
+_SEND_LOG: list[float] = []
+_SEND_LOCK = threading.Lock()
+SEND_PER_HOUR = 20
+SEND_PER_DAY = 40
+
+
+def smtp_quota_ok() -> tuple[bool, str]:
+    """返回 (是否可发, 超出时的用户可读文案)。"""
+    now = time.time()
+    with _SEND_LOCK:
+        kept = [t for t in _SEND_LOG if now - t < 86400]
+        _SEND_LOG[:] = kept
+        if len(kept) >= SEND_PER_DAY:
+            return False, "今日邮件发送量已达上限，请明天再试或联系客服"
+        if sum(1 for t in kept if now - t < 3600) >= SEND_PER_HOUR:
+            return False, "发送过于频繁，请稍后再试"
+    return True, ""
+
+
+def _record_smtp_send() -> None:
+    with _SEND_LOCK:
+        _SEND_LOG.append(time.time())
+
+
 def _send_smtp(to_email: str, code: str) -> None:
     """通过 SMTP 发送验证码邮件（仅标准库，无第三方依赖）。
 
@@ -962,6 +990,7 @@ def _send_smtp(to_email: str, code: str) -> None:
     except Exception as e:  # noqa: BLE001
         logging.getLogger("vdl.auth").error("SMTP 发送失败 to=%s: %s", to_email, e)
         raise
+    _record_smtp_send()
 
 
 def deliver_reset_code(identifier: str, code: str) -> None:

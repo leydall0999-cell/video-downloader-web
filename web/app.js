@@ -10209,7 +10209,8 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
   });
   el.pfResetSendBtn.addEventListener('click', async () => {
     const ident = el.pfResetIdent.value.trim();
-    if (!ident) { pfSecStatus('请输入注册时的邮箱 / 手机号'); return; }
+    if (!ident) { pfSecStatus('请输入注册时使用的邮箱'); return; }
+    if (ident.indexOf('@') < 0) { pfSecStatus('手机号账号暂不支持自助找回，请联系客服重置'); return; }
     pfSecStatus('验证码发送中…');
     try {
       const data = await request('/api/auth/reset-code', {

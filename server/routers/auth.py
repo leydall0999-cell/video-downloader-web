@@ -462,10 +462,19 @@ def auth_reset_code(request: Request, payload: dict[str, Any] = Body(...)) -> di
         generate_reset_code,
         reset_code_cooldown_ok,
         deliver_reset_code,
+        smtp_quota_ok,
         _send_mode,
     )
+    # 手机号账号没有短信通道（deliver_reset_code 的 sms 分支仍是 NotImplemented），
+    # 硬推给 SMTP 会拿 "15014313254" 当收件人去发信 → QQ 必定拒收，用户最后看到
+    # 一句「请检查邮件服务配置」的内部错误。实话实说比甩报错有用。
+    if "@" not in ident:
+        return {"ok": False, "error": "手机号账号暂不支持自助找回密码，请联系客服重置"}
     if not reset_code_cooldown_ok(ident):
         return {"ok": False, "error": "验证码已发送，请稍后再试（60 秒冷却）"}
+    quota_ok, quota_msg = smtp_quota_ok()
+    if not quota_ok:
+        return {"ok": False, "error": quota_msg}
     code = generate_reset_code(ident)
     if code:
         try:
