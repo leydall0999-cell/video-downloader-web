@@ -55,6 +55,15 @@ def _is_valid_identifier(ident: str) -> bool:
     return bool(_PHONE_RE.match(ident) or _E164_RE.match(ident))
 
 
+def _is_valid_email(ident: str) -> bool:
+    """仅邮箱。2026-11-01 起：注册与找回密码只收邮箱（无短信通道，手机号收不到码）。
+
+    登录仍走 `_is_valid_identifier` —— 早前用手机号注册的老账号得能登进来，
+    否则用户手里有密码却进不去。
+    """
+    return "@" in ident and bool(_EMAIL_RE.match(ident))
+
+
 # 本机回环地址：桌面 App 的前端固定访问 127.0.0.1:8321，故其调用方恒为其中之一。
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -192,9 +201,12 @@ def auth_register(request: Request, response: Response,
     ident = str(payload.get("identifier") or "").strip().lower()
     pw = str(payload.get("password") or "")
     if not ident:
-        return {"ok": False, "error": "请输入邮箱或手机号"}
-    if not _is_valid_identifier(ident):
-        return {"ok": False, "error": "账号需为有效邮箱（支持 QQ/Google 邮箱）或手机号"}
+        return {"ok": False, "error": "请输入邮箱"}
+    if "@" not in ident:
+        # 注册只走邮箱：没有短信通道，手机号账号既收不到验证码也无法自助找回密码。
+        return {"ok": False, "error": "手机号注册已关闭，请改用邮箱注册（此前注册的手机号账号仍可正常登录）"}
+    if not _is_valid_email(ident):
+        return {"ok": False, "error": "邮箱格式不正确，请检查后重试"}
     if len(pw) < 6:
         return {"ok": False, "error": "密码至少 6 位"}
 
@@ -455,9 +467,11 @@ def account_deactivate(request: Request, payload: dict[str, Any] = Body(...)) ->
 def auth_reset_code(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     ident = str(payload.get("identifier") or "").strip().lower()
     if not ident:
-        return {"ok": False, "error": "请输入邮箱或手机号"}
-    if not _is_valid_identifier(ident):
-        return {"ok": False, "error": "账号需为有效邮箱（支持 QQ/Google 邮箱）或手机号"}
+        return {"ok": False, "error": "请输入注册邮箱"}
+    if not _is_valid_email(ident):
+        if "@" in ident:
+            return {"ok": False, "error": "邮箱格式不正确，请检查后重试"}
+        return {"ok": False, "error": "请输入注册邮箱（手机号账号请联系客服重置）"}
     from auth_store import (
         generate_reset_code,
         reset_code_cooldown_ok,
@@ -467,9 +481,7 @@ def auth_reset_code(request: Request, payload: dict[str, Any] = Body(...)) -> di
     )
     # 手机号账号没有短信通道（deliver_reset_code 的 sms 分支仍是 NotImplemented），
     # 硬推给 SMTP 会拿 "15014313254" 当收件人去发信 → QQ 必定拒收，用户最后看到
-    # 一句「请检查邮件服务配置」的内部错误。实话实说比甩报错有用。
-    if "@" not in ident:
-        return {"ok": False, "error": "手机号账号暂不支持自助找回密码，请联系客服重置"}
+    # 一句「请检查邮件服务配置」的内部错误。上面的 "@" 判断已提前拦掉。
     if not reset_code_cooldown_ok(ident):
         return {"ok": False, "error": "验证码已发送，请稍后再试（60 秒冷却）"}
     quota_ok, quota_msg = smtp_quota_ok()
@@ -495,9 +507,9 @@ def auth_reset(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     pw = str(payload.get("password") or "")
     code = str(payload.get("code") or "").strip()
     if not ident:
-        return {"ok": False, "error": "请输入邮箱或手机号"}
-    if not _is_valid_identifier(ident):
-        return {"ok": False, "error": "账号需为有效邮箱（支持 QQ/Google 邮箱）或手机号"}
+        return {"ok": False, "error": "请输入注册邮箱"}
+    if not _is_valid_email(ident):
+        return {"ok": False, "error": "邮箱格式不正确，请检查后重试"}
     if not code:
         return {"ok": False, "error": "请输入验证码"}
     if len(pw) < 6:

@@ -439,7 +439,7 @@
     // —— 个人中心（2026-09-29 对齐 App）——
     profileView: $('profileView'),
     pfAuthBox: $('pfAuthBox'), pfAuthModeTitle: $('pfAuthModeTitle'),
-    pfIdentifier: $('pfIdentifier'), pfPassword: $('pfPassword'),
+    pfIdentifier: $('pfIdentifier'), pfPassword: $('pfPassword'), pfIdentLabel: $('pfIdentLabel'),
     pfAuthSubmit: $('pfAuthSubmit'), pfAuthSwitch: $('pfAuthSwitch'), pfAuthStatus: $('pfAuthStatus'),
     pfAuthHint: $('pfAuthHint'),
     pfUserBox: $('pfUserBox'),
@@ -489,7 +489,7 @@
     authHeaderBtn: $('authHeaderBtn'),
     authModal: $('authModal'), authModalTitle: $('authModalTitle'), authModalHint: $('authModalHint'),
     authModalClose: $('authModalClose'),
-    amIdentifier: $('amIdentifier'), amPassword: $('amPassword'),
+    amIdentifier: $('amIdentifier'), amPassword: $('amPassword'), amIdentLabel: $('amIdentLabel'),
     amSubmit: $('amSubmit'), amSwitch: $('amSwitch'), amStatus: $('amStatus'),
     // —— 个人中心 · 账号安全（改密 / 忘记密码 / 注销）——
     pfCurPw: $('pfCurPw'), pfNewPw: $('pfNewPw'), pfChangePwBtn: $('pfChangePwBtn'),
@@ -9885,10 +9885,17 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
 
   const pfSetAuthStatus = (t) => { el.pfAuthStatus.textContent = t || ''; };
 
+  // 与后端 routers/auth.py 的 _EMAIL_RE 同款：注册/找回只收邮箱（2026-11-01）。
+  // 登录仍允许手机号 —— 早前用手机号注册的老账号得能登进来。
+  const _EMAIL_OK_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+  const _identLabelText = (isReg) => (isReg ? '邮箱' : '邮箱 / 手机号');
   const pfDoAuth = async () => {
     const ident = el.pfIdentifier.value.trim();
     const pw = el.pfPassword.value;
     if (!ident || !pw) { pfSetAuthStatus('请填写账号和密码'); return; }
+    if (pfAuthIsRegister && !_EMAIL_OK_RE.test(ident)) {
+      pfSetAuthStatus('注册请使用邮箱（QQ / Gmail / 163 / 139 等邮箱均可）'); return;
+    }
     pfSetAuthStatus(pfAuthIsRegister ? '注册中…' : '登录中…');
     try {
       const ep = pfAuthIsRegister ? '/api/auth/register' : '/api/auth/login';
@@ -9920,6 +9927,12 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     el.pfAuthModeTitle.textContent = pfAuthIsRegister ? '注册新账号' : '登录账号';
     el.pfAuthSubmit.textContent = pfAuthIsRegister ? '注册' : '登录';
     el.pfAuthSwitch.textContent = pfAuthIsRegister ? '已有账号？登录' : '没有账号？注册';
+    if (el.pfIdentLabel) el.pfIdentLabel.textContent = _identLabelText(pfAuthIsRegister);
+    if (el.pfIdentifier) {
+      el.pfIdentifier.placeholder = pfAuthIsRegister ? 'name@qq.com' : '邮箱或手机号';
+      // 注册态直接用 input[type=email] 收窄：手机自带键盘会跟着切到 @ 号布局
+      el.pfIdentifier.type = pfAuthIsRegister ? 'email' : 'text';
+    }
     pfSetAuthStatus('');
   });
   el.pfLogoutBtn.addEventListener('click', () => {
@@ -10061,6 +10074,9 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     const ident = el.amIdentifier.value.trim();
     const pw = el.amPassword.value;
     if (!ident || !pw) { amSetStatus('请填写账号和密码'); return; }
+    if (amIsRegister && !_EMAIL_OK_RE.test(ident)) {
+      amSetStatus('注册请使用邮箱（QQ / Gmail / 163 / 139 等邮箱均可）'); return;
+    }
     amSetStatus(amIsRegister ? '注册中…' : '登录中…');
     try {
       const ep = amIsRegister ? '/api/auth/register' : '/api/auth/login';
@@ -10089,6 +10105,11 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     el.authModalTitle.textContent = amIsRegister ? '注册新账号' : '登录账号';
     el.amSubmit.textContent = amIsRegister ? '注册' : '登录';
     el.amSwitch.textContent = amIsRegister ? '已有账号？登录' : '没有账号？注册';
+    if (el.amIdentLabel) el.amIdentLabel.textContent = _identLabelText(amIsRegister);
+    if (el.amIdentifier) {
+      el.amIdentifier.placeholder = amIsRegister ? 'name@qq.com' : '邮箱或手机号';
+      el.amIdentifier.type = amIsRegister ? 'email' : 'text';
+    }
     amSetStatus('');
   });
   el.authModalClose.addEventListener('click', closeAuthModal);
@@ -10210,7 +10231,7 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
   el.pfResetSendBtn.addEventListener('click', async () => {
     const ident = el.pfResetIdent.value.trim();
     if (!ident) { pfSecStatus('请输入注册时使用的邮箱'); return; }
-    if (ident.indexOf('@') < 0) { pfSecStatus('手机号账号暂不支持自助找回，请联系客服重置'); return; }
+    if (!_EMAIL_OK_RE.test(ident)) { pfSecStatus('请填写注册邮箱（手机号账号请联系客服重置）'); return; }
     pfSecStatus('验证码发送中…');
     try {
       const data = await request('/api/auth/reset-code', {
