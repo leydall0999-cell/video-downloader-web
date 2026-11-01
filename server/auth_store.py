@@ -219,6 +219,10 @@ def _load_secret() -> bytes:
 _SECRET = _load_secret()
 PBKDF2_ITERS = 200_000
 TOKEN_TTL = 60 * 60 * 24 * 30  # 30 天
+# 后台专用令牌（2026-11-01）：网页后台走独立登录地址，令牌只活 2 小时。
+# 与前台 30 天令牌**同一把签名密钥**（不新增 secret，避免部署新密钥的运维成本），
+# 靠 payload 多一段作用域标记 `adm` 区分 —— 见 issue_admin_token / verify_admin_token。
+ADMIN_TOKEN_TTL = 2 * 60 * 60  # 2 小时
 
 
 # --------------------------------------------------------------------------- #
@@ -347,11 +351,14 @@ def verify_token(token: str) -> Optional[str]:
     try:
         decoded = b64d(payload).decode("utf-8")
         # decoded = f"{uid}.{iat}.{exp}" 或 f"{uid}.{iat}.{exp}.{ver}"
+        # 或后台令牌 f"{uid}.{iat}.{exp}.{ver}.adm"
         parts = decoded.split(".")
         if len(parts) >= 3:
             exp = int(parts[2])
         if len(parts) >= 4:
             ver = int(parts[3])
+        if len(parts) >= 5:
+            return None                  # 后台令牌（adm 作用域）不得当普通会话用
     except Exception:
         return None
     expected = hmac.new(_SECRET, f"{user_id}.{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
@@ -370,11 +377,79 @@ def verify_token(token: str) -> Optional[str]:
     return user_id
 
 
+def issue_admin_token(user_id: str) -> str:
+    """签发**后台专用**令牌（2026-11-01）：payload 多一段作用域 `adm`，只活 2 小时。
+
+    为什么单独一套：网页后台原来复用前台 30 天登录令牌，导致
+      ① 必须先在前台登录超管账号，才能进后台（入口混在一起）；
+      ② 后台一旦登进去，30 天都算"在线"，管理员笔记本丢了的风险窗口太大。
+    现在后台有自己的地址 /admin/login + 自己的短效令牌，两者互不牵连：
+      · 前台登录 → 拿不到后台令牌，进不去 /admin/；
+      · 后台退出 → 不影响前台正在用的会话。
+
+    签名密钥仍用 _SECRET（不新增 secret），`adm` 段由 verify_admin_token 严格校验，
+    同时 verify_token 对 5 段 payload 一律拒绝 ⇒ 后台令牌不能冒充普通会话。
+    """
+    iat = int(time.time())
+    exp = iat + ADMIN_TOKEN_TTL
+    ver = _current_token_version(user_id)
+    payload = _b64url(f"{user_id}.{iat}.{exp}.{ver}.adm".encode("utf-8"))
+    sig = hmac.new(_SECRET, f"{user_id}.{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{user_id}.{payload}.{sig}"
+
+
+def verify_admin_token(token: str) -> Optional[str]:
+    """校验后台令牌：签名 → exp → 必须带 `adm` 作用域 → 账号状态 + token_version。
+
+    与 verify_token 的检查项一致，但**额外要求第 5 段 == "adm"**：
+    普通登录令牌在这里一律 None（反向由 verify_token 拒绝 5 段），
+    因此两个作用域严格互斥，前台令牌永远换不到后台权限。
+    """
+    if not token or token.count(".") != 2:
+        return None
+    user_id, payload, sig = token.split(".")
+    exp = None
+    ver = 0
+    try:
+        decoded = b64d(payload).decode("utf-8")
+        parts = decoded.split(".")
+        if len(parts) < 5 or parts[4] != "adm":
+            return None                  # 不是后台令牌（含前台 30 天令牌）
+        exp = int(parts[2])
+        ver = int(parts[3])
+    except Exception:
+        return None
+    expected = hmac.new(_SECRET, f"{user_id}.{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        return None
+    if exp is not None and int(time.time()) > exp:
+        return None                      # 后台令牌过期（2 小时），需重新登录
+    state = _user_auth_state(user_id)
+    if state is None:
+        return None
+    cur_ver, disabled, deleted = state
+    if disabled or deleted:
+        return None
+    if ver != cur_ver:
+        return None                      # 改密 / 禁用后后台令牌一并作废
+    return user_id
+
+
 def token_from_header(authorization: Optional[str]) -> Optional[str]:
+    """从 Authorization 头解析 uid，**两种作用域都认**。
+
+    普通令牌 → verify_token；后台令牌 → verify_admin_token（2 小时）。
+    后台令牌也认，是因为 /api/admin/* 端点内部大量直接用 get_current_user_id()
+    取「我是谁」（标记当前账号、写审计 actor）。若这里只认前台令牌，后台登录后
+    那些位置会拿到 None，「自己那行」会被渲染成「取消管理员 / 禁用」。
+
+    两个作用域仍是**签发端互斥**：前台令牌换不到后台页面，后台令牌 2 小时即失效。
+    """
     if not authorization:
         return None
     if authorization.startswith("Bearer "):
-        return verify_token(authorization[7:].strip())
+        raw = authorization[7:].strip()
+        return verify_token(raw) or verify_admin_token(raw)
     return None
 
 

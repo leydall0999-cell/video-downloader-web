@@ -2278,6 +2278,10 @@ async def _admin_write_audit(request: Request, call_next):
     method = request.method
     if not path.startswith("/api/admin/") or method in ("GET", "HEAD", "OPTIONS"):
         return await call_next(request)
+    if path == "/api/admin/login":
+        # 登录接口自己写审计（带账号标识、429 锁定分支、成功/失败都记），
+        # 这里跳过 —— 否则一次登录尝试会在日志里落两行，一条 actor 还是空的。
+        return await call_next(request)
     actor = ""
     try:
         from user_membership import get_current_user_id
@@ -2292,12 +2296,17 @@ async def _admin_write_audit(request: Request, call_next):
     finally:
         try:
             import admin_audit
+            # 🔴 IP 不能取 request.client.host（2026-11-01 修）：公网链路是
+            # 浏览器 → Cloudflare → 隧道 → 本机 nginx → uvicorn，这里**恒为
+            # 127.0.0.1**，日志里所有操作看起来像同一个人在家干的，等于没有溯源。
+            # 真实 IP 在 CF-Connecting-IP（CF 覆写，客户端伪造不了）。
+            from routers.admin import _client_ip
             admin_audit.append({
                 "actor": actor,
                 "method": method,
                 "path": path,
                 "status": status,
-                "ip": (request.client.host if request.client else ""),
+                "ip": _client_ip(request),
             })
         except Exception:  # noqa: BLE001
             pass

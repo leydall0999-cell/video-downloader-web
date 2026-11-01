@@ -12,9 +12,11 @@
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Request
+from fastapi.responses import FileResponse, JSONResponse
 
 router = APIRouter()
 
@@ -212,6 +214,186 @@ def require_super(request: Request) -> None:
     if user_role(uid) != "super":
         raise HTTPException(status_code=403,
                             detail="仅超级管理员可执行此操作（管理员为只读）")
+
+
+# --------------------------------------------------------------------------- #
+# 后台独立登录（2026-11-01）
+# --------------------------------------------------------------------------- #
+# 为什么单独一套：原来后台没有自己的登录门，只能"先在前台当普通用户登录，
+# 碰巧这个号是管理员"才能进 —— 入口混在前台、令牌还是 30 天长期会话。
+# 现在 /admin/login 自己一个登录框，签发只活 2 小时的 adm 作用域令牌
+# （见 auth_store.issue_admin_token），跟前台账号会话彻底分开。
+
+# 失败计数放进程内存：vdl-web 是单 worker，重启即清零 —— 对"拦暴力枚举"足够。
+# 🔴 键是 **IP 而不是账号**：按账号锁会给攻击者一个"把超管账号锁死"的拒绝服务面。
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_MAX = 5                    # 窗口内允许的失败次数
+_LOGIN_WINDOW = 10 * 60           # 计数窗口 10 分钟
+_LOGIN_LOCK = 10 * 60             # 超限后锁 10 分钟
+
+
+def _client_ip(request: Request) -> str:
+    """取真实客户端 IP。
+
+    公网链路是 浏览器 → Cloudflare → CF 隧道 → 本机 nginx → uvicorn，
+    `request.client.host` 恒为 127.0.0.1。若直接拿它当限流键，等于**全网共用一个
+    计数器** —— 任意一个人输错 5 次就把所有人锁在门外。
+
+    真实 IP：CF-Connecting-IP 由 Cloudflare 覆写（客户端无法伪造）；缺失时退到
+    本机 nginx 写的 X-Real-IP / X-Forwarded-For 首段。
+    """
+    hdrs = getattr(request, "headers", None) or {}
+    for key in ("cf-connecting-ip", "x-real-ip"):
+        val = str(hdrs.get(key) or "").strip()
+        if val:
+            return val
+    xff = str(hdrs.get("x-forwarded-for") or "").split(",")[0].strip()
+    if xff:
+        return xff
+    try:
+        return str(request.client.host or "?")
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def _lock_left(ip: str) -> int:
+    """返回剩余锁定秒数；0 = 未锁。顺手清掉窗口外的旧记录（避免字典无限增长）。"""
+    now = time.time()
+    rows = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < _LOGIN_LOCK]
+    if rows:
+        _LOGIN_FAILS[ip] = rows
+    else:
+        _LOGIN_FAILS.pop(ip, None)
+    if len(rows) >= _LOGIN_MAX:
+        return max(1, int(_LOGIN_LOCK - (now - rows[-1])))
+    return 0
+
+
+def _note_fail(ip: str) -> None:
+    now = time.time()
+    rows = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < _LOGIN_WINDOW]
+    rows.append(now)
+    _LOGIN_FAILS[ip] = rows[-20:]      # 只留最近 20 条，内存有上限
+
+
+def _admin_token_left(request: Request) -> Optional[int]:
+    """当前请求若带后台令牌，返回剩余有效秒数（前端据此显示"还剩 X 分钟"）。"""
+    auth = str((getattr(request, "headers", None) or {}).get("Authorization") or "")
+    if not auth.startswith("Bearer "):
+        return None
+    raw = auth[7:].strip()
+    try:
+        payload = raw.split(".")[1]
+        pad = "=" * (-len(payload) % 4)
+        import base64
+        parts = base64.urlsafe_b64decode(payload + pad).decode("utf-8").split(".")
+        if len(parts) >= 5 and parts[4] == "adm":
+            return max(0, int(parts[2]) - int(time.time()))
+    except Exception:  # noqa: BLE001 — 解析失败只是不显示倒计时
+        return None
+    return None
+
+
+@router.get("/admin/login", include_in_schema=False)
+def admin_login_page() -> Any:
+    """把 /admin/login 指到静态登录页。
+
+    StaticFiles(html=True) 只会把目录映射到 index.html，`/admin/login` 这种
+    无扩展名路径会 404 —— 而"单独登录地址"必须短、能直接敲。所以显式给一条路由。
+    """
+    import os
+    import app as _app
+    # WEB_DIR 在冻结包里是 Path、源码运行时也是 Path，但用 os.path.join 统一兜住，
+    # 免得哪天它变成 str 时这里抛 TypeError（后台登录页直接 500）。
+    return FileResponse(os.path.join(str(_app.WEB_DIR), "admin", "login.html"),
+                        media_type="text/html; charset=utf-8")
+
+
+@router.post("/api/admin/login")
+def admin_login(request: Request, payload: dict[str, Any] = Body(...)) -> Any:
+    """后台专用登录：账号密码 → 2 小时 adm 令牌。
+
+    安全要素：
+      · 同 IP 10 分钟内错 5 次 → 锁 10 分钟（429）；
+      · 密码错 / 账号不存在 → **统一文案**，不区分（防账号枚举）；
+      · 密码对但非管理员 → 403 明确告知「没有后台权限」（能走到这一步已证明是本人，
+        不构成枚举风险，且含糊文案会让真人反复重试）；
+      · 成功/失败都写审计（含 IP），失败尝试同样留痕。
+    """
+    import admin_audit
+
+    ident = str(payload.get("identifier") or "").strip().lower()
+    pw = str(payload.get("password") or "")
+    ip = _client_ip(request)
+
+    left = _lock_left(ip)
+    if left:
+        admin_audit.append({"actor": ident or "-", "method": "POST",
+                            "path": "/api/admin/login·locked", "status": 429, "ip": ip})
+        return JSONResponse(status_code=429, content={
+            "ok": False, "code": "TOO_MANY_TRIES",
+            "error": f"密码错误次数过多，请 {max(1, (left + 59) // 60)} 分钟后再试",
+            "retry_after": left})
+
+    if not ident or not pw:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "code": "MISSING", "error": "请输入账号和密码"})
+
+    # ① 先走本机镜像校验：快，且**不注册云端设备**。
+    #    若这里直接调前台 auth_login，每 2 小时登一次后台就会注册一次设备，
+    #    反复挤占管理员自己的 2 台设备额度（把这台浏览器当新设备）。
+    from auth_store import authenticate
+    uid = authenticate(ident, pw)
+    warn = ""
+    if not uid:
+        # ② 本机没有该号 / 镜像密码陈旧 → 交前台登录链路判一次（云端权威）。
+        #    这条路径低频（仅在首次或云端改密后），代价是注册一次设备。
+        from fastapi import Response as _Resp
+        from routers.auth import auth_login
+        res = auth_login(request, _Resp(), {"identifier": ident, "password": pw})
+        if not res or not res.get("ok"):
+            _note_fail(ip)
+            admin_audit.append({"actor": ident, "method": "POST",
+                                "path": "/api/admin/login", "status": 401, "ip": ip})
+            return JSONResponse(status_code=401, content={
+                "ok": False, "code": "BAD_CREDENTIALS",
+                "error": str((res or {}).get("error") or "账号或密码错误")})
+        uid = str(res.get("user_id") or "")
+        warn = str(res.get("cloud_notice") or "")
+
+    if not uid:
+        _note_fail(ip)
+        return JSONResponse(status_code=401, content={
+            "ok": False, "code": "BAD_CREDENTIALS", "error": "账号或密码错误"})
+
+    from auth_store import ADMIN_TOKEN_TTL, issue_admin_token, user_identifier, user_role
+    role = user_role(uid)
+    if role not in ("super", "admin"):
+        admin_audit.append({"actor": user_identifier(uid) or ident, "method": "POST",
+                            "path": "/api/admin/login", "status": 403, "ip": ip})
+        return JSONResponse(status_code=403, content={
+            "ok": False, "code": "NOT_ADMIN",
+            "error": "该账号没有后台权限（只有管理员/超级管理员可进后台）"})
+
+    token = issue_admin_token(uid)
+    _LOGIN_FAILS.pop(ip, None)
+    actor = user_identifier(uid) or ident
+    admin_audit.append({"actor": actor, "method": "POST",
+                        "path": "/api/admin/login", "status": 200, "ip": ip})
+    return {"ok": True, "token": token, "user_id": uid, "identifier": actor,
+            "role": role, "expires_in": ADMIN_TOKEN_TTL, "notice": warn}
+
+
+@router.get("/api/admin/whoami")
+def admin_whoami(request: Request = None) -> dict[str, Any]:
+    """后台身份自查：角色 + 令牌剩余有效期（前端顶部显示「还剩 X 分钟」）。"""
+    require_admin(request)
+    from auth_store import user_identifier, user_role
+    uid = get_current_user_id(request)
+    return {"ok": True, "user_id": uid,
+            "identifier": user_identifier(uid) or uid,
+            "role": user_role(uid),
+            "expires_in": _admin_token_left(request)}
 
 
 @router.get("/api/admin/users")

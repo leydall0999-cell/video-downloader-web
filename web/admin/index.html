@@ -91,6 +91,7 @@
   <div class="spacer"></div>
   <button id="save">保存改动</button>
   <button id="reload" class="ghost">重新加载</button>
+  <button id="logout" class="ghost">退出后台</button>
 </header>
 
 <nav class="tabs" id="tabs" style="display:none">
@@ -107,14 +108,13 @@
 
 <div class="wrap">
   <section class="panel" id="gate">
-    <h2><span class="dot"></span>登录</h2>
+    <h2><span class="dot"></span>后台需要单独登录</h2>
     <p class="note">
-      这里要用<b>超级管理员账号</b>的登录 token。在网站前台登录那个超管账号后，
-      浏览器里已经存好了 —— 也可以点下面先自动读取。
+      后台已改成<b>独立登录</b>：不再复用前台账号的登录态。请到专用登录页验证身份，
+      登录后有效期 <b>2 小时</b>，与前台会话互不影响。
     </p>
     <div class="row">
-      <input id="token" type="password" placeholder="Bearer token（留空则自动取前台登录态）" style="width:340px" autocomplete="off">
-      <button id="login">登录</button>
+      <a href="/admin/login"><button type="button">去登录</button></a>
     </div>
   </section>
 
@@ -273,7 +273,11 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  let TOKEN = '';
+  // 后台专用令牌（2 小时，adm 作用域）。与前台 vdl_auth_token **分开存**：
+  // 前台登录不会把登录态带进后台，后台退出也不影响前台正在用的会话。
+  const ADMIN_KEY = 'vdl_admin_token';
+  let TOKEN = (localStorage.getItem(ADMIN_KEY) || '').trim();
+  let LEFT = null;    // 令牌剩余秒数（whoami 返回，顶部提示「还剩 X 分钟」）
   let ROWS = [];
   let BASE = {};      // op -> 代码默认积分
   let POLICY0 = {};   // 服务端返回的原始策略快照，用于只提交改动项
@@ -288,17 +292,19 @@
     document.body.classList.toggle('readonly', !IS_SUPER);
     $('readonlyBar').style.display = IS_SUPER ? 'none' : '';
     $('save').disabled = !IS_SUPER;
-    $('who').textContent = IS_SUPER ? '已登录：超级管理员'
-      : (role === 'admin' ? '已登录：管理员（只读）' : '已登录：无后台权限');
+    const mins = (LEFT == null) ? '' : ` · 剩余 ${Math.max(1, Math.round(LEFT / 60))} 分钟`;
+    $('who').textContent = (IS_SUPER ? '已登录：超级管理员'
+      : (role === 'admin' ? '已登录：管理员（只读）' : '已登录：无后台权限')) + mins;
   }
 
-  // 登录后先问身份再拉数据。/api/auth/me 是最轻的身份接口（不含敏感配置）。
+  // 先问身份再拉数据。/api/admin/whoami 认后台令牌，顺带回剩余有效期。
   async function fetchRole() {
-    const me = await api('/api/auth/me');
+    const me = await api('/api/admin/whoami');
     if (!me || me.ok === false) throw new Error('登录态无效');
-    // 老后端没有 role 字段时按 is_admin 兜底成「管理员」——
-    // 宁可把超管显示成只读，也不要把管理员误显示成超管。
-    return me.role || (me.is_admin ? 'admin' : '');
+    LEFT = (typeof me.expires_in === 'number') ? me.expires_in : null;
+    // 老后端没有 role 字段时按「管理员」兜底 —— 宁可把超管显示成只读，
+    // 也不要把管理员误显示成超管。
+    return me.role || 'admin';
   }
 
   function toast(msg, ms) {
@@ -313,6 +319,13 @@
     opts = opts || {};
     opts.headers = Object.assign({ 'Authorization': 'Bearer ' + TOKEN }, opts.headers || {});
     const r = await fetch(path, opts);
+    if (r.status === 401) {
+      // 后台令牌 2 小时到期 / 被改密作废 —— 清掉本地令牌送回登录页，
+      // 而不是停在这个页面上一直报「未授权」让人以为坏了。
+      localStorage.removeItem(ADMIN_KEY);
+      toast('登录已过期，请重新登录', 2600);
+      setTimeout(() => location.replace('/admin/login'), 1400);
+    }
     if (!r.ok) {
       let detail = r.statusText;
       try { detail = (await r.json()).detail || detail; } catch (e) { /* 非 JSON 响应 */ }
@@ -1143,20 +1156,25 @@
     toast('已保存，立即生效');
   }
 
-  $('login').addEventListener('click', async () => {
-    TOKEN = ($('token').value || '').trim();
-    if (!TOKEN) TOKEN = (localStorage.getItem('vdl_auth_token') || '').trim();
-    if (!TOKEN) { toast('请先在前台登录超管账号，或手填 token'); return; }
-    try {
-      await load();
-      // 身份文案由 load() 内的 applyRole() 统一设置（超管/管理员/无权限三种），
-      // 这里不要再来一句「已登录超级管理员」把它盖掉。
-    } catch (e) {
+  $('logout').addEventListener('click', () => {
+    localStorage.removeItem(ADMIN_KEY);
+    TOKEN = '';
+    location.replace('/admin/login');
+  });
+
+  // 没有后台令牌 → 直接送登录页。后台只保留**一个**登录入口（/admin/login），
+  // 这里不再给输入框，避免两处都能拿到后台权限。
+  if (!TOKEN) {
+    // 带上原 hash：App 里「网页后台 ↗」带的是 #platform-health，
+    // 不带过去的话登录完会落在默认页签，等于那个按钮失去意义。
+    location.replace('/admin/login' + (location.hash || ''));
+  } else {
+    load().catch((e) => {
       $('who').textContent = '登录失败';
       $('who').className = 'who err';
-      toast('登录失败：' + e.message, 3600);
-    }
-  });
+      toast('加载失败：' + e.message, 3600);
+    });
+  }
   // 页签切换。运维监控 / 每日对账 继续走 /ops/ 那块看板（Admin-Key 鉴权），
   // 这里只做跳转 —— 同一件事不实现两份。
   document.querySelectorAll('.tab[data-tab]').forEach((b) => {

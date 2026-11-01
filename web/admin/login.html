@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>后台登录 · 视频工坊</title>
+<style>
+  :root { --bg:#0f1320; --panel:#171c2e; --panel2:#1f2740; --line:#2a3350; --txt:#e6e9f2; --muted:#9aa3c0; --accent:#5b8cff; --red:#ff6b6b; --green:#42d392; --amber:#ffb84d; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--txt);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+    background-image:radial-gradient(900px 500px at 50% -10%, rgba(91,140,255,.13), transparent 70%);
+  }
+  .card {
+    width:100%; max-width:396px; background:var(--panel); border:1px solid var(--line);
+    border-radius:16px; padding:30px 28px 24px;
+    box-shadow:0 24px 64px rgba(0,0,0,.45);
+  }
+  .brand { display:flex; align-items:center; gap:9px; margin-bottom:6px; }
+  .brand .dot { width:9px; height:9px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 4px rgba(91,140,255,.16); }
+  h1 { font-size:17px; margin:0; font-weight:600; letter-spacing:.2px; }
+  .sub { color:var(--muted); font-size:12px; margin:0 0 22px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:0 0 6px; }
+  .field { margin-bottom:14px; }
+  input {
+    width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--txt);
+    padding:11px 12px; border-radius:9px; outline:none; font-size:14px; transition:border-color .15s, background .15s;
+  }
+  input:focus { border-color:var(--accent); background:#222b47; }
+  input:disabled { opacity:.55; }
+  button {
+    width:100%; background:var(--accent); color:#fff; border:none; padding:11px 14px;
+    border-radius:9px; cursor:pointer; font-size:14px; font-weight:500; margin-top:6px;
+    transition:filter .15s, transform .05s;
+  }
+  button:hover:not(:disabled) { filter:brightness(1.08); }
+  button:active:not(:disabled) { transform:translateY(1px); }
+  button:disabled { opacity:.6; cursor:default; }
+  .msg {
+    display:none; margin-top:14px; padding:10px 12px; border-radius:9px;
+    font-size:12.5px; line-height:1.5; background:rgba(255,107,107,.12);
+    border:1px solid rgba(255,107,107,.35); color:#ffb3b3;
+  }
+  .msg.show { display:block; }
+  .msg.ok { background:rgba(66,211,146,.12); border-color:rgba(66,211,146,.35); color:#8ce8c0; }
+  .row2 { display:flex; align-items:center; gap:8px; margin:2px 0 4px; font-size:12px; color:var(--muted); }
+  .row2 input[type=checkbox] { width:15px; height:15px; accent-color:var(--accent); }
+  .row2 label { margin:0; cursor:pointer; user-select:none; }
+  .foot { margin-top:20px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:11.5px; line-height:1.7; }
+  .foot b { color:var(--txt); font-weight:500; }
+  kbd { background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:11px; }
+</style>
+</head>
+<body>
+<form class="card" id="form" autocomplete="off">
+  <div class="brand"><span class="dot"></span><h1>后台登录</h1></div>
+  <p class="sub">管理控制台 · 仅限管理员账号</p>
+
+  <div class="field">
+    <label for="ident">账号</label>
+    <input id="ident" type="text" placeholder="邮箱或手机号" autocomplete="username" spellcheck="false">
+  </div>
+  <div class="field">
+    <label for="pw">密码</label>
+    <input id="pw" type="password" placeholder="登录密码" autocomplete="current-password">
+  </div>
+
+  <div class="row2">
+    <input id="remember" type="checkbox" checked>
+    <label for="remember">记住账号</label>
+  </div>
+
+  <button id="go" type="submit">登录后台</button>
+  <div class="msg" id="msg"></div>
+
+  <div class="foot">
+    凭据与前台账号相同；登录后有效期 <b>2 小时</b>，与前台会话互不影响。<br>
+    同一 IP 连错 5 次将锁定 10 分钟。
+  </div>
+</form>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var KEY = 'vdl_admin_token';
+  var IDKEY = 'vdl_admin_ident';
+  var HASH = location.hash || '';   // 保留入口锚点（App 带的是 #platform-health）
+  var busy = false;
+
+  function say(text, ok) {
+    var m = $('msg');
+    m.textContent = text;
+    m.className = 'msg show' + (ok ? ' ok' : '');
+  }
+  function hide() { $('msg').className = 'msg'; }
+
+  // 已经持有未过期的后台令牌 → 直接进后台，不必再输一次密码。
+  // 校验走 /api/admin/whoami（服务端会验签名 + 2 小时过期 + 账号状态）。
+  var saved = (localStorage.getItem(KEY) || '').trim();
+  if (saved) {
+    say('检测到有效登录，正在进入…', true);
+    fetch('/api/admin/whoami', { headers: { 'Authorization': 'Bearer ' + saved } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j && j.ok) { location.replace('/admin/' + HASH); }
+        else { localStorage.removeItem(KEY); hide(); }
+      })
+      .catch(function () { hide(); });
+  }
+
+  var lastIdent = localStorage.getItem(IDKEY) || '';
+  if (lastIdent) { $('ident').value = lastIdent; $('pw').focus(); }
+  else { $('ident').focus(); }
+
+  $('form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    if (busy) return;
+    var ident = ($('ident').value || '').trim();
+    var pw = $('pw').value || '';
+    if (!ident || !pw) { say('请填写账号和密码'); return; }
+
+    busy = true;
+    $('go').disabled = true;
+    $('go').textContent = '登录中…';
+    hide();
+
+    fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier: ident, password: pw })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { status: r.status, body: j || {} }; });
+    }).then(function (res) {
+      var b = res.body || {};
+      if (res.status === 200 && b.ok && b.token) {
+        if ($('remember').checked) { localStorage.setItem(IDKEY, ident); }
+        else { localStorage.removeItem(IDKEY); }
+        // 与前台 vdl_auth_token 分开存：前台登录不产生后台令牌，反之亦然。
+        localStorage.setItem(KEY, b.token);
+        say('登录成功，正在进入…', true);
+        location.replace('/admin/' + HASH);
+        return;
+      }
+      if (res.status === 429) { say(b.error || '尝试次数过多，请稍后再试'); }
+      else if (res.status === 403) { say(b.error || '该账号没有后台权限'); }
+      else { say(b.error || '账号或密码错误'); }
+      if (b.code === 'BAD_CREDENTIALS') { $('pw').value = ''; $('pw').focus(); }
+    }).catch(function () {
+      say('网络异常，请检查连接后重试');
+    }).then(function () {
+      busy = false;
+      $('go').disabled = false;
+      $('go').textContent = '登录后台';
+    });
+  });
+})();
+</script>
+</body>
+</html>
