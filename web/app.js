@@ -37,7 +37,19 @@
   // 自身任何异常都静默吞掉，绝不因上报逻辑再触发二次错误。
   let _vdlErrSent = 0;
   const _vdlErrCap = 50; // 单会话上限，防止错误风暴刷屏服务端
-  function _vdlReportError(message, stack, category) {
+  // 会话号（2026-11-01 运维面板要能回答「同一次访问出了几个错」）：
+  // 只存浏览器 sessionStorage，服务端仅留这个随机串，不含任何身份信息。
+  const _vdlSid = (() => {
+    try {
+      let s = sessionStorage.getItem('vdl_err_sid');
+      if (!s) {
+        s = 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        sessionStorage.setItem('vdl_err_sid', s);
+      }
+      return s;
+    } catch (_) { return ''; }
+  })();
+  function _vdlReportError(message, stack, category, loc) {
     if (_vdlErrSent >= _vdlErrCap) return;
     _vdlErrSent++;
     try {
@@ -47,6 +59,17 @@
         url: location.href.slice(0, 500),
         level: 'error',
         category: category || 'client_js',
+        // 以下为「哪个端、哪一屏」的上下文：UA 由服务端从请求头取，这里补浏览器侧信息
+        page: (location.pathname + location.search).slice(0, 200),
+        ref: String(document.referrer || '').slice(0, 300),
+        viewport: (window.innerWidth || 0) + 'x' + (window.innerHeight || 0),
+        screen: window.screen ? (window.screen.width + 'x' + window.screen.height) : '',
+        lang: String(navigator.language || ''),
+        in_iframe: window.top !== window.self,
+        session: _vdlSid,
+        filename: (loc && loc.filename) || '',
+        line: (loc && loc.line) || '',
+        col: (loc && loc.col) || '',
       };
       const body = JSON.stringify(payload);
       if (navigator.sendBeacon) {
@@ -60,7 +83,14 @@
     try {
       const stack = (e.error && e.error.stack) ? e.error.stack : '';
       const loc = e.filename ? (String(e.filename).split('/').pop() + ':' + e.lineno + ':' + e.colno) : '';
-      _vdlReportError((e.message || (e.error && e.error.message) || e.error) + (loc ? ' @ ' + loc : ''), stack, 'client_js');
+      // 「Script error.」且没有文件名 = 浏览器把跨域脚本 / 扩展注入的细节屏蔽了。
+      // 这类错误拿不到任何有用信息，单独归档，免得淹没真错误（线上 34 条全是它）。
+      const opaque = !e.filename && /^script error\.?$/i.test(String(e.message || '').trim());
+      _vdlReportError(
+        (e.message || (e.error && e.error.message) || e.error) + (loc ? ' @ ' + loc : ''),
+        stack,
+        opaque ? 'client_js_opaque' : 'client_js',
+        { filename: e.filename || '', line: e.lineno, col: e.colno });
     } catch (_) {}
   });
   window.addEventListener('unhandledrejection', (e) => {

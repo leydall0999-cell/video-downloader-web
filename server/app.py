@@ -132,7 +132,12 @@ def record_event(level, category, message, *, request=None, extra=None):
                 rec["path"] = ""
             rec["ua"] = (request.headers.get("User-Agent") or "")[:200]
             try:
-                rec["ip"] = request.client.host if request.client else ""
+                # 🔴 2026-11-01：CF 隧道下 request.client.host **恒为 127.0.0.1**，照原写法
+                # 每条事件的来源都记成回环地址，运维面板的 IP 列等于废的。
+                # 与审计中间件同口径：CF-Connecting-IP → X-Forwarded-For 首段 → socket 对端。
+                rec["ip"] = ((request.headers.get("CF-Connecting-IP")
+                              or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+                              or (request.client.host if request.client else "")) or "")
             except Exception:
                 rec["ip"] = ""
         if extra:

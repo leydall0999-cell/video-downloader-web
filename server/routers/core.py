@@ -1120,6 +1120,17 @@ def client_error(payload: dict, request: app.Request):
         "col": payload.get("col"),
         "level": payload.get("level", "error"),
         "category": payload.get("category", "client_js"),
+        # 2026-11-01：光有 message 说不出「谁在什么设备上出的错」。下面这些由前端
+        # 主动带上（UA 由服务端从请求头取），才能在运维面板回答「哪个端、哪一屏」。
+        "page": (payload.get("page") or "")[:200],
+        "ref": (payload.get("ref") or "")[:300],
+        "viewport": (payload.get("viewport") or "")[:40],
+        "screen": (payload.get("screen") or "")[:40],
+        "lang": (payload.get("lang") or "")[:40],
+        "in_iframe": bool(payload.get("in_iframe")),
+        "session": (payload.get("session") or "")[:40],
+        "app_ver": (payload.get("app_ver") or "")[:40],
+        "filename": (payload.get("filename") or "")[:300],
     }
     app.record_event("error", "client_js", msg, request=request, extra=extra)
     return {"ok": True}
@@ -1342,7 +1353,69 @@ def admin_events(request: app.Request, limit: int = 200, level: str = "", range:
         except Exception:
             pass
     items = items[-max(1, min(int(limit), 2000)):]
-    return {"count": len(items), "events": items, "range": range or "all", "range_label": _OPS_RANGE_LABELS.get(range, "全部")}
+    # ── 2026-11-01「做细」：每条补上「端」，并把同类错误归组 ────────────────
+    # 只给一长串 "Script error." 原始行，等于把排查工作原样退回给人；
+    # 归组后变成「一条 ×34，首次/末次时间 + 涉及哪些端和页面」才是能用的信息。
+    from collections import Counter
+    for rec in items:
+        brief = _ua_brief(rec.get("ua") or "")
+        rec["device"] = brief["device"]
+        rec["browser"] = brief["browser"]
+        rec["os"] = brief["os"]
+    groups: dict = {}
+    by_level: Counter = Counter()
+    by_category: Counter = Counter()
+    by_device: Counter = Counter()
+    for rec in items:
+        by_level[str(rec.get("level") or "-")] += 1
+        by_category[str(rec.get("category") or "-")] += 1
+        by_device[str(rec.get("device") or "-")] += 1
+        key = _err_key(rec.get("message") or "")
+        ts = rec.get("ts") or 0
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {
+                "key": key, "message": rec.get("message") or "",
+                "category": rec.get("category") or "",
+                "count": 0, "first_ts": ts, "last_ts": ts,
+                "devices": Counter(), "browsers": Counter(),
+                "paths": Counter(), "ips": Counter(), "levels": Counter(),
+                "urls": {},
+            }
+        g["count"] += 1
+        g["first_ts"] = min(g["first_ts"], ts) if g["first_ts"] else ts
+        g["last_ts"] = max(g["last_ts"], ts)
+        g["devices"][str(rec.get("device") or "未知")] += 1
+        g["browsers"][str(rec.get("browser") or "未知")] += 1
+        g["levels"][str(rec.get("level") or "-")] += 1
+        if rec.get("ip"):
+            g["ips"][rec["ip"]] += 1
+        if rec.get("path"):
+            g["paths"][rec["path"]] += 1
+        url = ((rec.get("extra") or {}).get("url") or "")
+        if url:
+            g["urls"][url] = g["urls"].get(url, 0) + 1
+    out_groups = [{
+        "key": g["key"], "message": g["message"], "category": g["category"],
+        "count": g["count"], "first_ts": g["first_ts"], "last_ts": g["last_ts"],
+        "devices": dict(g["devices"].most_common()),
+        "browsers": dict(g["browsers"].most_common()),
+        "levels": dict(g["levels"].most_common()),
+        "paths": dict(g["paths"].most_common(5)),
+        "ips": dict(g["ips"].most_common(5)),
+        "urls": sorted(g["urls"].items(), key=lambda kv: -kv[1])[:5],
+    } for g in groups.values()]
+    out_groups.sort(key=lambda x: (-x["count"], -x["last_ts"]))
+    return {
+        "count": len(items), "events": items,
+        "groups": out_groups,
+        "stats": {"total": len(items),
+                  "by_level": dict(by_level.most_common()),
+                  "by_category": dict(by_category.most_common()),
+                  "by_device": dict(by_device.most_common()),
+                  "group_count": len(out_groups)},
+        "range": range or "all", "range_label": _OPS_RANGE_LABELS.get(range, "全部"),
+    }
 
 
 def _collect_local_diag() -> dict:
@@ -1471,6 +1544,76 @@ def _is_page_path(path: str) -> bool:
     return True
 
 
+# ── UA 轻量解析（2026-11-01 运维面板要能看出「哪个端」）───────────────────
+# 不引第三方库：够区分「设备 / 浏览器 / 系统」三列即可。原始 UA 一屏放不下、
+# 也读不出重点，直接甩给老板等于没给信息。
+_BROWSER_MARKS = (
+    ("微信", ("MicroMessenger",)),
+    ("钉钉", ("DingTalk",)),
+    ("QQ浏览器", ("QQBrowser",)),
+    ("Edge", ("Edg/", "EdgA/", "EdgiOS/")),
+    ("Chrome", ("Chrome/", "CriOS/", "Chromium/")),
+    ("Safari", ("Safari/",)),
+    ("Firefox", ("Firefox/", "FxiOS/")),
+    ("Opera", ("OPR/", "Opera/")),
+)
+_OS_MARKS = (
+    ("iOS", ("iPhone", "iPad", "iPod")),
+    ("Android", ("Android",)),
+    ("Windows", ("Windows NT",)),
+    ("macOS", ("Macintosh", "Mac OS X")),
+    ("HarmonyOS", ("HarmonyOS", "OpenHarmony")),
+    ("Linux", ("Linux", "X11")),
+)
+_UA_CACHE: dict = {}
+
+
+def _ua_brief(ua: str) -> dict:
+    """UA → {device, browser, os}。
+
+    设备分五类：桌面 App / 脚本机器 / 手机 / 平板 / 电脑。判定**顺序有意义**：
+    先认自家 App 和脚本（它们的 UA 里往往也带 Mozilla），再看移动端，最后才轮到电脑。
+    同一 UA 一次请求里会被反复问到，用 `_UA_CACHE` 兜一层（访问日志动辄上万行）。
+    """
+    s = str(ua or "")
+    if not s:
+        return {"device": "未知", "browser": "未知", "os": "未知"}
+    hit = _UA_CACHE.get(s)
+    if hit is not None:
+        return hit
+    osname = next((n for n, marks in _OS_MARKS if any(m in s for m in marks)), "其它")
+    browser = next((n for n, marks in _BROWSER_MARKS if any(m in s for m in marks)), "其它")
+    if _is_app_ua(s):
+        device, browser = "桌面 App", "VideoDownloader"
+    elif _is_machine_ua(s):
+        device = "脚本/机器"
+    elif "iPad" in s or "Tablet" in s or ("Android" in s and "Mobile" not in s):
+        device = "平板"
+    elif "Mobile" in s or "iPhone" in s or "Android" in s:
+        device = "手机"
+    elif "Mozilla" in s:
+        device = "电脑"
+    else:
+        device = "其它"
+    out = {"device": device, "browser": browser, "os": osname}
+    if len(_UA_CACHE) < 4000:      # 防长跑进程被各种爬虫 UA 撑爆
+        _UA_CACHE[s] = out
+    return out
+
+
+def _err_key(msg: str) -> str:
+    """错误归组键：抹掉数字/哈希这类每次都变的部分，把「同一个错」收成一行。
+
+    线上那面「Script error. ×34」的墙，就是靠它变成一条带次数的记录。
+    """
+    import re as _re
+    s = str(msg or "")
+    s = _re.sub(r"\b[0-9a-f]{8,}\b", "<id>", s, flags=_re.I)
+    s = _re.sub(r"\b\d+(\.\d+)?\b", "<n>", s)
+    s = _re.sub(r"\s+", " ", s).strip()
+    return s[:180]
+
+
 @router.get("/api/admin/visits")
 def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
     """网站访客汇总：解析 nginx access.log，统计独立 IP / 状态码 / 热点路径 / 最近访问。
@@ -1504,6 +1647,12 @@ def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
     human_ips: set = set()
     human_pages: Counter = Counter()
     machine_requests = 0
+    # 运维面板「哪个端」+ 时间趋势（2026-11-01）：设备/浏览器/系统三列 + 按小时计数
+    by_hour: Counter = Counter()
+    by_device: Counter = Counter()
+    by_browser: Counter = Counter()
+    by_os: Counter = Counter()
+    path_mix: dict = {}          # path → Counter({"2xx": n, ...})，让热点路径能看出错没错
     # 按客户端拆分（2026-10-03）：桌面 App / 网页页面 / 网页接口轮询 / 其它客户端
     app_reqs = 0
     app_ips: set = set()
@@ -1521,30 +1670,42 @@ def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
         m = line_re.search(ln)
         if not m:
             continue
-        if threshold is not None:
-            try:
-                _dt = datetime.strptime(m.group("t"), "%d/%b/%Y:%H:%M:%S %z")
-                if _dt < threshold:
-                    continue
-            except Exception:
-                pass
+        _dt = None
+        try:
+            _dt = datetime.strptime(m.group("t"), "%d/%b/%Y:%H:%M:%S %z")
+        except Exception:
+            pass
+        if threshold is not None and _dt is not None and _dt < threshold:
+            continue
         total += 1
         ip = m.group("ip")
         path = m.group("p")
         status = m.group("s")
+        brief = _ua_brief(m.group("ua") or "")
+        by_device[brief["device"]] += 1
+        by_browser[brief["browser"]] += 1
+        by_os[brief["os"]] += 1
+        if _dt is not None:
+            by_hour[_dt.strftime("%m-%d %H:00")] += 1
         ips.add(ip)
         by_status[status] += 1
         by_method[m.group("m")] += 1
         top_ips[ip] += 1
         if not path.lower().endswith(_STATIC_SUFFIX):
             top_paths[path] += 1
+            path_mix.setdefault(path, Counter())[f"{status[0]}xx"] += 1
         recent.append({
             "t": m.group("t"),
+            "ts": int(_dt.timestamp()) if _dt else None,
             "ip": ip,
             "m": m.group("m"),
             "p": path,
             "s": int(status),
             "ua": m.group("ua")[:140],
+            "ref": m.group("ref")[:200],
+            "device": brief["device"],
+            "browser": brief["browser"],
+            "os": brief["os"],
         })
         # ---- 真人访客口径 + 按客户端拆分 ----
         ua = m.group("ua") or ""
@@ -1574,7 +1735,13 @@ def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
         "unique_ips": len(ips),
         "by_status": dict(by_status.most_common()),
         "by_method": dict(by_method.most_common()),
-        "top_paths": [{"path": k, "count": v} for k, v in top_paths.most_common(20)],
+        "top_paths": [{"path": k, "count": v,
+                       "mix": dict(path_mix.get(k, {}))}
+                      for k, v in top_paths.most_common(20)],
+        "by_hour": [{"h": k, "count": v} for k, v in sorted(by_hour.items())],
+        "by_device": dict(by_device.most_common()),
+        "by_browser": dict(by_browser.most_common()),
+        "by_os": dict(by_os.most_common()),
         "top_ips": [{"ip": k, "count": v} for k, v in top_ips.most_common(15)],
         "recent": recent[-max(1, min(int(limit), 200)):],
         "source": _NGINX_ACCESS_LOG,

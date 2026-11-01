@@ -5,75 +5,161 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>视频工坊 · 运维控制台</title>
 <style>
-  :root { --bg:#0f1320; --panel:#171c2e; --panel2:#1f2740; --line:#2a3350; --txt:#e6e9f2; --muted:#9aa3c0; --accent:#5b8cff; --red:#ff6b6b; --green:#42d392; --amber:#ffb84d; }
+  :root { --bg:#0f1320; --panel:#171c2e; --panel2:#1f2740; --line:#2a3350; --txt:#e6e9f2; --muted:#9aa3c0; --accent:#5b8cff; --red:#ff6b6b; --green:#42d392; --amber:#ffb84d; --violet:#a78bfa; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
-  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   header h1 { font-size:18px; margin:0; font-weight:600; }
   .keybox { display:flex; gap:8px; align-items:center; margin-left:auto; }
-  .keybox input { background:var(--panel2); border:1px solid var(--line); color:var(--txt); padding:8px 10px; border-radius:8px; width:240px; outline:none; }
+  .keybox input { background:var(--panel2); border:1px solid var(--line); color:var(--txt); padding:8px 10px; border-radius:8px; width:220px; outline:none; }
   .keybox input:focus { border-color:var(--accent); }
   button { background:var(--accent); color:#fff; border:none; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
   button.ghost { background:var(--panel2); color:var(--txt); border:1px solid var(--line); }
   button:active { transform:translateY(1px); }
-  .wrap { padding:20px 24px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
-  @media (max-width:980px){ .wrap { grid-template-columns:1fr; } }
+  /* 时间范围（2026-11-01：原来页面根本没把 range 传给后端，四个范围等于不存在） */
+  .chips { display:flex; gap:6px; }
+  .chip { background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:999px; padding:6px 12px; font-size:12.5px; cursor:pointer; }
+  .chip.is-on { background:rgba(91,140,255,.18); border-color:var(--accent); color:var(--txt); }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px; padding:16px 24px 0; }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .kpi b { display:block; font-size:22px; line-height:1.15; font-variant-numeric:tabular-nums; }
+  .kpi span { color:var(--muted); font-size:12px; }
+  .kpi small { color:var(--muted); font-size:11px; display:block; margin-top:2px; }
+  .kpi.hl b { color:var(--accent); }
+  .kpi.warn b { color:var(--amber); }
+  .kpi.bad b { color:var(--red); }
+  .wrap { padding:16px 24px 24px; display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
+  .col { display:flex; flex-direction:column; gap:20px; min-width:0; }
+  @media (max-width:1080px){ .wrap { grid-template-columns:1fr; } }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
   .panel h2 { font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
   .panel h2 .dot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
-  .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
-  .stat { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:90px; }
-  .stat b { display:block; font-size:20px; }
+  .panel h2 small { color:var(--muted); font-weight:400; font-size:12px; margin-left:auto; }
+  h3.sub { font-size:12.5px; color:var(--muted); margin:14px 0 7px; font-weight:500; display:flex; align-items:center; gap:6px; }
+  h3.sub:first-of-type { margin-top:4px; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .stat { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:9px 13px; min-width:84px; }
+  .stat b { display:block; font-size:19px; }
   .stat span { color:var(--muted); font-size:12px; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:5px 7px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:500; }
-  td.ip, td.path { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .badge { display:inline-block; padding:1px 7px; border-radius:6px; font-size:12px; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.ip, td.path { max-width:230px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:6px; font-size:11.5px; font-variant-numeric:tabular-nums; }
   .b2xx { background:rgba(66,211,146,.15); color:var(--green); }
   .b3xx { background:rgba(91,140,255,.15); color:var(--accent); }
   .b4xx { background:rgba(255,184,77,.15); color:var(--amber); }
   .b5xx { background:rgba(255,107,107,.15); color:var(--red); }
-  .recent { max-height:240px; overflow:auto; }
-  .empty { color:var(--muted); padding:14px 0; }
-  #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:6px; font-size:11.5px; background:var(--panel2); border:1px solid var(--line); color:var(--muted); margin:1px 3px 1px 0; white-space:nowrap; }
+  .tag.dev { color:var(--txt); border-color:#36436b; }
+  .recent { max-height:270px; overflow:auto; }
+  .empty { color:var(--muted); padding:12px 0; font-size:12.5px; }
+  #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; z-index:9; }
   .err { color:var(--red); }
-  small.note { color:var(--muted); display:block; margin-top:8px; }
-  /* 被后台以 /ops/?embed=1 内嵌时：隐掉自己的标题栏和密钥框，避免后台里出现两层头；
-     鉴权由后台令牌自动带上，不需要人再输一次运维密钥。 */
-  body.embed header { display:none; }
-  body.embed .wrap { padding-top:14px; }
+  small.note { color:var(--muted); display:block; margin-top:8px; font-size:11.5px; line-height:1.55; }
+  /* 每小时趋势条 */
+  .bars { display:flex; align-items:flex-end; gap:3px; height:86px; padding:6px 0 0; }
+  .bars .bar { flex:1; background:linear-gradient(180deg,#5b8cff,#365ed6); border-radius:3px 3px 0 0; min-height:2px; position:relative; }
+  .bars .bar:hover::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 4px); left:50%; transform:translateX(-50%); background:#000c; border:1px solid var(--line); padding:3px 7px; border-radius:6px; font-size:11px; white-space:nowrap; z-index:3; }
+  .bars-legend { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; margin-top:4px; }
+  /* 端分布三列 */
+  .cols3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  @media (max-width:640px){ .cols3 { grid-template-columns:1fr; } }
+  .mini { font-size:12.5px; }
+  .mini .row { display:flex; align-items:center; gap:6px; padding:2px 0; }
+  .mini .row .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mini .row .nn { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .mini .track { height:3px; border-radius:2px; background:var(--panel2); overflow:hidden; margin-top:2px; }
+  .mini .track i { display:block; height:100%; background:var(--accent); }
+  /* 状态码一行 */
+  .statusrow { display:flex; gap:8px; flex-wrap:wrap; }
+  .sbox { background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:7px 11px; min-width:76px; }
+  .sbox b { display:block; font-size:16px; font-variant-numeric:tabular-nums; }
+  .sbox span { font-size:11.5px; color:var(--muted); }
+  /* 错误分组 */
+  .groups { max-height:520px; overflow:auto; display:flex; flex-direction:column; gap:8px; }
+  details.grp { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
+  details.grp[open] { border-color:#3a4a78; }
+  details.grp summary { cursor:pointer; display:flex; gap:8px; align-items:baseline; list-style:none; }
+  details.grp summary::-webkit-details-marker { display:none; }
+  details.grp .cnt { color:var(--amber); font-weight:600; font-variant-numeric:tabular-nums; flex:none; }
+  details.grp .msg { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  details.grp .when { color:var(--muted); font-size:11.5px; flex:none; white-space:nowrap; }
+  details.grp .body { margin-top:9px; border-top:1px dashed var(--line); padding-top:8px; font-size:12.5px; }
+  details.grp .body .line { display:flex; gap:8px; padding:2px 0; }
+  details.grp .body .line b { color:var(--muted); font-weight:500; flex:none; width:56px; }
+  details.grp .body .line span { word-break:break-all; }
+  /* 被后台以 /ops/?embed=1 内嵌时：只隐掉标题与密钥框（后台已经有这两样了）。
+     🔴 时间范围切换和「刷新」必须留着 —— 早期版本把整个 header 隐掉，内嵌进后台后
+     就没有任何办法切范围，只剩一屏死数据。 */
+  body.embed header h1, body.embed header .keybox { display:none; }
+  body.embed header { padding:10px 24px 0; border-bottom:none; gap:8px; }
+  body.embed .kpis { padding-top:8px; }
+  body.embed .wrap { padding-top:12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>视频工坊 · 运维控制台</h1>
+  <div class="chips" id="rangeBar">
+    <button class="chip" data-range="day">今天</button>
+    <button class="chip" data-range="3d">近 3 天</button>
+    <button class="chip" data-range="week">近 7 天</button>
+    <button class="chip" data-range="month">近 30 天</button>
+  </div>
   <div class="keybox">
     <input id="key" type="password" placeholder="运维密钥 (X-Admin-Key)" autocomplete="off">
-    <button id="load">加载数据</button>
+    <button id="load">刷新</button>
     <button id="clear" class="ghost">清除密钥</button>
   </div>
 </header>
+
+<div class="kpis" id="kpis"><div class="empty">输入密钥后加载</div></div>
+
 <div class="wrap">
+  <div class="col">
   <section class="panel">
-    <h2><span class="dot"></span>网站访客</h2>
-    <div class="stats" id="visitStats"><div class="empty">输入密钥后加载</div></div>
-    <h3 style="font-size:13px;color:var(--muted);margin:6px 0">热点路径（排除静态资源）</h3>
+    <h2><span class="dot"></span>网站访客<small id="visitRangeHint"></small></h2>
+
+    <h3 class="sub">最近 24 小时请求量（每小时）</h3>
+    <div class="bars" id="hourBars"></div>
+    <div class="bars-legend" id="hourLegend"></div>
+
+    <h3 class="sub">访问来自哪个端</h3>
+    <div class="cols3">
+      <div><div class="mini" id="tblDevice"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">设备</div></div>
+      <div><div class="mini" id="tblBrowser"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">浏览器</div></div>
+      <div><div class="mini" id="tblOs"></div><div style="color:var(--muted);font-size:11px;margin-top:3px">系统</div></div>
+    </div>
+
+    <h3 class="sub">响应状态</h3>
+    <div class="statusrow" id="statusRow"></div>
+
+    <h3 class="sub">热点路径（排除静态资源，含状态构成）</h3>
     <table id="visitPaths"><tbody></tbody></table>
-    <h3 style="font-size:13px;color:var(--muted);margin:12px 0 6px">来源 IP Top</h3>
+
+    <h3 class="sub">来源 IP Top</h3>
     <table id="visitIps"><tbody></tbody></table>
-    <h3 style="font-size:13px;color:var(--muted);margin:12px 0 6px">最近访问</h3>
+
+    <h3 class="sub">最近访问</h3>
     <div class="recent"><table id="visitRecent"><tbody></tbody></table></div>
-    <small class="note">数据来源：nginx 访问日志（最近 8000 行）。</small>
+    <small class="note">数据来源：nginx 访问日志（含轮转文件）。「真人」= 浏览器 UA 且访问页面级路径，已排除接口轮询、静态资源与脚本。</small>
   </section>
+  </div>
+
+  <div class="col">
   <section class="panel">
-    <h2><span class="dot"></span>错误 / 异常事件</h2>
+    <h2><span class="dot" style="background:var(--red)"></span>错误 / 异常<small id="evtRangeHint"></small></h2>
     <div class="stats" id="evtStats"><div class="empty">输入密钥后加载</div></div>
-    <div class="recent"><table id="evtList"><tbody></tbody></table></div>
-    <small class="note">数据来源：服务端结构化事件日志（前端 JS 报错 + 未捕获异常）。</small>
+    <h3 class="sub">按错误内容归组（点开看明细：端 / 页面 / IP / 时间）</h3>
+    <div class="groups" id="evtGroups"><div class="empty">输入密钥后加载</div></div>
+    <small class="note">数据来源：服务端结构化事件日志（前端 JS 报错 + 未捕获异常）。同类错误按内容归并计数，数字与哈希已抹平；
+      「无详情」类＝浏览器屏蔽了跨域脚本／浏览器扩展注入的报错，拿不到文件与行号。</small>
   </section>
+
   <section class="panel">
-    <h2><span class="dot"></span>网页转化（站内事件）</h2>
+    <h2><span class="dot" style="background:var(--green)"></span>网页转化（站内事件）</h2>
     <div class="stats" id="wsStats"><div class="empty">输入密钥后加载</div></div>
     <div class="recent">
       <table>
@@ -81,12 +167,13 @@
         <tbody id="wsDaysBody"></tbody>
       </table>
     </div>
-    <h3 style="font-size:13px;color:var(--muted);margin:12px 0 6px">外链来源 Top</h3>
+    <h3 class="sub">外链来源 Top</h3>
     <table><tbody id="wsRefsBody"></tbody></table>
     <small class="note">数据来源：服务端 web_stats.json（前端埋点）。与左侧 nginx 口径互补——这里只统计真实页面访问与站内转化，且<b>不落 IP 明文</b>；UV 为按天独立去重之和，口径＝人次。</small>
   </section>
+
   <section class="panel">
-    <h2><span class="dot"></span>解析需求榜（哪些站用户要但下不了）</h2>
+    <h2><span class="dot" style="background:var(--violet)"></span>解析需求榜（哪些站用户要但下不了）</h2>
     <div class="stats" id="rdStats"><div class="empty">输入密钥后加载</div></div>
     <div class="recent">
       <table>
@@ -96,6 +183,7 @@
     </div>
     <small class="note">数据来源：解析失败自动登记（白名单空白站点 + 未知域名，近 12 周，按「站点×周」计数，重试不重复计）。用途：每月挑 Top 写成专用提取器。</small>
   </section>
+
   <section class="panel">
     <h2><span class="dot" style="background:var(--amber)"></span>会员公告（会员中心套餐卡上方那条）</h2>
     <label style="display:flex;gap:.45rem;align-items:center;font-size:13px;margin-bottom:8px">
@@ -110,6 +198,7 @@
     </div>
     <small class="note">真源在授权中心：保存后所有用户（桌面端 + 网页版）的会员中心都会显示，两侧最长 15 秒刷新。清空内容 = 关闭公告栏。</small>
   </section>
+  </div>
 </div>
 <div id="toast"></div>
 <script>
@@ -135,25 +224,44 @@ if (ADMIN_TOKEN) {
   };
 }
 if (EMBED) document.body.classList.add('embed');
+
 function toast(msg, isErr){ const t=$('toast'); t.textContent=msg; t.style.display='block'; t.style.borderColor=isErr?'var(--red)':'var(--line)'; clearTimeout(t._t); t._t=setTimeout(()=>t.style.display='none',2600); }
 function getKey(){ return sessionStorage.getItem('vdl_ops_key') || ''; }
 function setKey(k){ if(k) sessionStorage.setItem('vdl_ops_key', k); else sessionStorage.removeItem('vdl_ops_key'); }
 function statusBadge(s){ const c = s>=500?'b5xx':s>=400?'b4xx':s>=300?'b3xx':'b2xx'; return `<span class="badge ${c}">${s}</span>`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+const p2 = (n) => String(n).padStart(2,'0');
+// 统一时间口径（2026-11-01）：一律用秒级时间戳渲染成「MM-DD HH:MM:SS」+ 相对时间。
+// 原来「最近访问」那列取的是 nginx 原始时间串按空格切，只露出日期，看不出几点。
+function fmtTs(ts){ if(!ts) return '-'; const d=new Date(ts*1000); return `${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; }
+function ago(ts){ if(!ts) return ''; const s=Math.max(0, Date.now()/1000 - ts); if(s<60) return Math.floor(s)+' 秒前'; if(s<3600) return Math.floor(s/60)+' 分钟前'; if(s<86400) return Math.floor(s/3600)+' 小时前'; return Math.floor(s/86400)+' 天前'; }
+function num(n){ return Number(n||0).toLocaleString('zh-CN'); }
+
+// 时间范围：后端 /api/admin/visits 与 /api/admin/events 都认 range（day/3d/week/month）
+let RANGE = localStorage.getItem('vdl_ops_range') || 'week';
+function paintRange(){
+  document.querySelectorAll('#rangeBar .chip').forEach(b=>b.classList.toggle('is-on', b.dataset.range===RANGE));
+}
+document.querySelectorAll('#rangeBar .chip').forEach(b=>{
+  b.onclick = ()=>{ RANGE = b.dataset.range; localStorage.setItem('vdl_ops_range', RANGE); paintRange(); load(); };
+});
 
 async function load(){
   const key = $('key').value.trim() || getKey();
-  // 内嵌模式且手里有后台令牌时，密钥不再是必要条件（请求头会被换成 Bearer）。
-  if(!key && !ADMIN_TOKEN){ toast('请先输入运维密钥', true); return; }
+  // 内嵌模式且手里有后台令牌时，密钥不再是必要条件（请求头会被换成 Bearer）；
+  // 连令牌都没有时也别急着退出 —— 本机直连场景服务端本就免密钥，
+  // 试一次再报错，比让人对着空页面猜要强。
+  if(!key && !ADMIN_TOKEN && !EMBED){ toast('请先输入运维密钥', true); return; }
   if(key){ setKey(key); $('key').value = key; }
   try {
     const [v, e] = await Promise.all([
-      fetch('/api/admin/visits', {headers:{'X-Admin-Key':key}}).then(r=>{ if(!r.ok) throw new Error('visits '+r.status); return r.json(); }),
-      fetch('/api/admin/events?limit=200', {headers:{'X-Admin-Key':key}}).then(r=>{ if(!r.ok) throw new Error('events '+r.status); return r.json(); }),
+      fetch('/api/admin/visits?range=' + encodeURIComponent(RANGE), {headers:{'X-Admin-Key':key}}).then(r=>{ if(!r.ok) throw new Error('visits '+r.status); return r.json(); }),
+      fetch('/api/admin/events?limit=500&range=' + encodeURIComponent(RANGE), {headers:{'X-Admin-Key':key}}).then(r=>{ if(!r.ok) throw new Error('events '+r.status); return r.json(); }),
     ]);
+    renderKpis(v, e);
     renderVisits(v);
     renderEvents(e);
-    loadWebStats(key);   // 独立加载：失败只影响该面板，不牵连上面两块
+    loadWebStats(key);        // 独立加载：失败只影响该面板，不牵连上面两块
     loadResolveDemand(key);   // 解析需求榜：同样独立，失败不牵连
     loadNotice(key);          // 会员公告：独立加载，失败不影响其它面板
     toast('已刷新');
@@ -161,21 +269,156 @@ async function load(){
     toast('加载失败：' + err.message + '（密钥错误？）', true);
   }
 }
+
+// KPI 行：先用最上面一排回答「今天来没来人、都从哪个端来、有没有错」
+function renderKpis(v, e){
+  if(v.error){ $('kpis').innerHTML = `<div class="err">${esc(v.error)}</div>`; return; }
+  const h = v.human || {}, c = v.by_client || {};
+  const dev = v.by_device || {};
+  const evtN = (e && e.stats && e.stats.total) || 0;
+  const grpN = (e && e.stats && e.stats.group_count) || 0;
+  const box = (label, val, sub, cls) => `<div class="kpi ${cls||''}"><b>${val}</b><span>${label}</span>${sub?`<small>${sub}</small>`:''}</div>`;
+  $('kpis').innerHTML =
+    box('真人访问 PV', num(h.pv), '页面级浏览', 'hl') +
+    box('真人访客 UV', num(h.uv), '按 IP+UA 去重') +
+    box('电脑', num(dev['电脑']||0), '桌面浏览器') +
+    box('手机 / 平板', num((dev['手机']||0)+(dev['平板']||0)), '移动浏览器') +
+    box('桌面 App', num((c.desktop_app||{}).requests||0), '客户端轮询', '') +
+    box('网页接口', num((c.web_api||{}).requests||0), '前端轮询') +
+    box('脚本 / 其它', num((c.other||{}).requests||0), '爬虫·扫描·curl') +
+    box('错误事件', num(evtN), grpN ? `归为 ${grpN} 类` : '无', evtN ? 'bad' : '');
+}
+
+const MAX_ROWS = 6;
+function miniBars(obj, total){
+  const arr = Object.entries(obj||{}).sort((a,b)=>b[1]-a[1]).slice(0, MAX_ROWS);
+  if(!arr.length) return '<div class="empty">无</div>';
+  return arr.map(([k,n])=>{
+    const pct = total ? Math.round(n/total*100) : 0;
+    return `<div class="row"><span class="nm" title="${esc(k)}">${esc(k)}</span><span class="nn">${num(n)}</span></div>
+      <div class="track"><i style="width:${Math.max(2,pct)}%"></i></div>`;
+  }).join('');
+}
+
 function renderVisits(v){
-  if(v.error){ $('visitStats').innerHTML = `<div class="err">${esc(v.error)}</div>`; return; }
-  $('visitStats').innerHTML =
-    `<div class="stat"><b>${v.total}</b><span>总请求</span></div>`+
-    `<div class="stat"><b>${v.unique_ips}</b><span>独立 IP</span></div>`+
-    Object.entries(v.by_status||{}).slice(0,4).map(([k,n])=>`<div class="stat"><b>${statusBadge(+k).replace('span','span')}</b><span>${k}: ${n}</span></div>`).join('');
-  $('visitPaths').innerHTML = (v.top_paths||[]).map(r=>`<tr><td class="path" title="${esc(r.path)}">${esc(r.path)}</td><td>${r.count}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">无</td></tr>';
-  $('visitIps').innerHTML = (v.top_ips||[]).map(r=>`<tr><td class="ip">${esc(r.ip)}</td><td>${r.count}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">无</td></tr>';
-  $('visitRecent').innerHTML = (v.recent||[]).map(r=>`<tr><td>${esc(r.t.split(' ')[0])}</td><td>${esc(r.ip)}</td><td>${r.m}</td><td class="path" title="${esc(r.p)}">${esc(r.p)}</td><td>${statusBadge(r.s)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">无</td></tr>';
+  if(v.error){ $('visitPaths').innerHTML = `<tr><td class="err">${esc(v.error)}</td></tr>`; return; }
+  $('visitRangeHint').textContent = `${v.range_label || ''} · 共 ${num(v.total)} 次请求 · ${num(v.unique_ips)} 个 IP`;
+
+  // 24 小时趋势：只取最后 24 个桶（跨天范围下这是「最近 24 小时」，标题已写明）
+  const hrs = (v.by_hour||[]).slice(-24);
+  if(hrs.length){
+    const mx = Math.max(...hrs.map(x=>x.count)) || 1;
+    $('hourBars').innerHTML = hrs.map(x=>{
+      const h = Math.max(2, Math.round(x.count/mx*100));
+      return `<div class="bar" style="height:${h}%" data-tip="${esc(x.h)} · ${num(x.count)} 次"></div>`;
+    }).join('');
+    $('hourLegend').innerHTML = `<span>${esc(hrs[0].h)}</span><span>峰值 ${num(mx)} 次/时</span><span>${esc(hrs[hrs.length-1].h)}</span>`;
+  } else {
+    $('hourBars').innerHTML = '<div class="empty">无数据</div>';
+    $('hourLegend').innerHTML = '';
+  }
+
+  // 端分布三列
+  $('tblDevice').innerHTML  = miniBars(v.by_device,  v.total);
+  $('tblBrowser').innerHTML = miniBars(v.by_browser, v.total);
+  $('tblOs').innerHTML      = miniBars(v.by_os,      v.total);
+
+  // 状态码：补齐 2xx/3xx/4xx/5xx 四档（原来只按具体码列前 4 个，看不出错没错）
+  const bs = v.by_status || {};
+  const bucket = {'2xx':0,'3xx':0,'4xx':0,'5xx':0};
+  Object.entries(bs).forEach(([k,n])=>{ const b = k[0]+'xx'; if(b in bucket) bucket[b]+=n; });
+  const cls = {'2xx':'var(--green)','3xx':'var(--accent)','4xx':'var(--amber)','5xx':'var(--red)'};
+  $('statusRow').innerHTML = Object.entries(bucket).map(([k,n])=>{
+    const pct = v.total ? Math.round(n/v.total*100) : 0;
+    return `<div class="sbox"><b style="color:${cls[k]}">${num(n)}</b><span>${k} · ${pct}%</span></div>`;
+  }).join('');
+
+  // 热点路径：加状态构成，一眼看出哪个接口在报 4xx/5xx
+  $('visitPaths').innerHTML = (v.top_paths||[]).map(r=>{
+    const mix = r.mix || {};
+    const pills = Object.keys(mix).sort().filter(k=>mix[k]>0)
+      .map(k=>`<span class="badge ${k==='5xx'?'b5xx':k==='4xx'?'b4xx':k==='3xx'?'b3xx':'b2xx'}">${k} ${num(mix[k])}</span>`).join(' ');
+    return `<tr><td class="path" title="${esc(r.path)}">${esc(r.path)}</td><td class="num">${num(r.count)}</td><td style="text-align:right">${pills}</td></tr>`;
+  }).join('') || '<tr><td colspan="3" class="empty">无</td></tr>';
+
+  // 来源 IP Top（带端标签：同一个 IP 是电脑还是手机，比光看 IP 有用）
+  // 取该 IP **最近一次**出现时的端（recent 按时间正序，后写覆盖前写）。
+  // 早先版本把同一个 IP 出现过的所有端拼成一串（"手机/脚本/机器/电脑"），反而读不出重点。
+  const ipDev = {};
+  (v.recent||[]).forEach(r=>{ ipDev[r.ip] = r.device; });
+  $('visitIps').innerHTML = (v.top_ips||[]).map(r=>{
+    const d = ipDev[r.ip] || '';
+    return `<tr><td class="ip">${esc(r.ip)}</td><td class="num">${num(r.count)}</td><td style="text-align:right;color:var(--muted)">${esc(d)}</td></tr>`;
+  }).join('') || '<tr><td colspan="3" class="empty">无</td></tr>';
+
+  // 最近访问：时间到秒 + 端 + 方法 + 路径 + 状态
+  $('visitRecent').innerHTML = (v.recent||[]).slice(-120).reverse().map(r=>{
+    const t = r.ts ? fmtTs(r.ts) : esc(r.t);
+    return `<tr><td style="white-space:nowrap">${t}</td><td><span class="tag dev">${esc(r.device||'-')}</span></td>`+
+      `<td style="color:var(--muted)">${esc(r.m)}</td><td class="path" title="${esc(r.p)}">${esc(r.p)}</td><td>${statusBadge(r.s)}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty">无</td></tr>';
 }
+
 function renderEvents(e){
-  const evs = (e.events||[]).slice().reverse();
-  $('evtStats').innerHTML = `<div class="stat"><b>${evs.length}</b><span>事件数</span></div>`;
-  $('evtList').innerHTML = evs.length ? evs.map(r=>`<tr><td>${esc((r.ts?new Date(r.ts*1000).toLocaleString():''))}</td><td>${esc(r.level)}</td><td>${esc(r.type)}</td><td class="path" title="${esc(r.message)}">${esc(r.message)}</td><td class="ip">${esc((r.extra&&r.extra.url)||'')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">暂无事件</td></tr>';
+  const st = e.stats || {};
+  const total = st.total || (e.count || 0);
+  const groups = e.groups || [];
+  $('evtRangeHint').textContent = `${e.range_label || ''} · ${num(total)} 条 / ${num(groups.length)} 类`;
+
+  // 概览：按端、按类型，而不是只甩一个总数
+  const dev = st.by_device || {}, cat = st.by_category || {};
+  const devTags = Object.entries(dev).map(([k,n])=>`<span class="tag dev">${esc(k)} ${num(n)}</span>`).join('');
+  const catTags = Object.entries(cat).slice(0,5).map(([k,n])=>`<span class="tag">${esc(catName(k))} ${num(n)}</span>`).join('');
+  $('evtStats').innerHTML =
+    `<div class="stat"><b>${num(total)}</b><span>事件条数</span></div>` +
+    `<div class="stat"><b>${num(groups.length)}</b><span>归并后类别</span></div>` +
+    `<div class="stat" style="min-width:auto"><b style="font-size:13px;line-height:1.6">${devTags || '-'}</b><span>来自哪个端</span></div>` +
+    `<div class="stat" style="min-width:auto"><b style="font-size:13px;line-height:1.6">${catTags || '-'}</b><span>错误类型</span></div>`;
+
+  if(!groups.length){ $('evtGroups').innerHTML = '<div class="empty">当前范围内没有错误事件</div>'; return; }
+
+  $('evtGroups').innerHTML = groups.slice(0, 80).map((g, gi)=>{
+    const isOpaque = g.category === 'client_js_opaque';
+    const devTags2 = Object.entries(g.devices||{}).map(([k,n])=>`<span class="tag dev">${esc(k)} ${num(n)}</span>`).join(' ') || '-';
+    const brTags = Object.entries(g.browsers||{}).map(([k,n])=>`<span class="tag">${esc(k)} ${num(n)}</span>`).join(' ') || '-';
+    const pages = Object.entries(g.paths||{}).map(([k,n])=>`${esc(k)} ×${n}`).join('，') || '-';
+    const urls = (g.urls||[]).map(([u,n])=>`<div>${esc(u)} <span style="color:var(--muted)">×${n}</span></div>`).join('');
+    const ips = Object.keys(g.ips||{}).join('，') || '-';
+    const span = g.first_ts && g.last_ts && g.first_ts !== g.last_ts
+      ? `${fmtTs(g.first_ts)} → ${fmtTs(g.last_ts)}`
+      : fmtTs(g.last_ts);
+    return `<details class="grp"${gi === 0 ? ' open' : ''}>
+      <summary>
+        <span class="cnt">×${num(g.count)}</span>
+        <span class="msg" title="${esc(g.message)}">${isOpaque ? '<span style="color:var(--amber)">无详情</span> ' : ''}${esc(g.message)}</span>
+        <span class="when">${esc(span)} · ${ago(g.last_ts)}</span>
+      </summary>
+      <div class="body">
+        <div class="line"><b>类型</b><span>${esc(catName(g.category))}（${esc(g.category)}）</span></div>
+        <div class="line"><b>端</b><span>${devTags2}</span></div>
+        <div class="line"><b>浏览器</b><span>${brTags}</span></div>
+        <div class="line"><b>接口</b><span>${pages}</span></div>
+        ${urls ? `<div class="line"><b>页面</b><span>${urls}</span></div>` : ''}
+        <div class="line"><b>来源 IP</b><span>${esc(ips)}</span></div>
+        <div class="line"><b>首次</b><span>${fmtTs(g.first_ts)}</span></div>
+        <div class="line"><b>末次</b><span>${fmtTs(g.last_ts)}</span></div>
+      </div>
+    </details>`;
+  }).join('');
 }
+
+function catName(c){
+  return ({
+    client_js: '前端 JS 报错',
+    client_js_opaque: '前端报错·无详情',
+    unhandledrejection: '未处理 Promise',
+    resolve: '解析',
+    download: '下载',
+    auth: '账号',
+    payment: '支付',
+  })[c] || (c || '-');
+}
+
 async function loadWebStats(key){
   try {
     const r = await fetch('/api/webstats/summary?days=7', {headers:{'X-Admin-Key':key}});
@@ -219,9 +462,9 @@ async function loadResolveDemand(key){
     $('rdStats').innerHTML =
       `<div class="stat"><b>${d.total_sites||0}</b><span>候选站点</span></div>`+
       (rows[0] ? `<div class="stat"><b>${esc(rows[0].host)}</b><span>需求最高（${wc(rows[0])} 周）</span></div>` : '');
-    const catName = (c) => (c==='pending_extractor' ? '已收录缺提取器' : c==='unsupported_platform' ? '未收录新站' : esc(c||'-'));
+    const catName2 = (c) => (c==='pending_extractor' ? '已收录缺提取器' : c==='unsupported_platform' ? '未收录新站' : esc(c||'-'));
     $('rdBody').innerHTML = rows.slice(0,30).map((x)=>{
-      const cats = Object.entries(x.categories||{}).map(([c,n])=>`${catName(c)}×${n}`).join('，') || '-';
+      const cats = Object.entries(x.categories||{}).map(([c,n])=>`${catName2(c)}×${n}`).join('，') || '-';
       const last = x.last_ts ? new Date(x.last_ts*1000).toLocaleDateString() : '-';
       const wkTip = (x.weeks||[]).length ? `命中周（周一）：${(x.weeks||[]).join('、')}` : '';
       return `<tr><td class="path">${esc(x.host)}</td><td title="${esc(wkTip)}"><b>${wc(x)}</b></td><td>${x.total}</td>`+
@@ -268,9 +511,10 @@ $('noticeSave').onclick = ()=> saveNotice(getKey() || $('key').value.trim());
 $('noticeReload').onclick = ()=> loadNotice(getKey() || $('key').value.trim());
 $('load').onclick = load;
 $('clear').onclick = ()=>{ setKey(''); $('key').value=''; toast('已清除本地密钥'); };
-// 内嵌进来时直接拉数据（人已经在后台登录过了，不该再点一次「加载数据」）；
-// 独立打开本页仍沿用「有密钥就自动加载」的老行为。
-if(EMBED && ADMIN_TOKEN){ load(); }
+paintRange();
+// 内嵌进来时直接拉数据（人已经在后台登录过了，不该再点一次「刷新」）。
+// 没拿到后台令牌也照拉一次：本机直连场景服务端免密钥；公网会返回 403，页面自己提示。
+if(EMBED){ load(); }
 else if(getKey()){ $('key').value = getKey(); load(); }
 </script>
 </body>
