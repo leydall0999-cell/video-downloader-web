@@ -795,12 +795,12 @@ def admin_install_stats(request: Request = None) -> dict[str, Any]:
 
 # 端分布缓存：设备画像变化很慢（登录 / 心跳才更新），没必要每次刷后台都打一次
 # 授权中心；60 秒对看板足够新鲜。
-_PLAT_CACHE: dict = {"t": 0.0, "data": None}
+_PLAT_CACHE: dict = {}   # range -> {"t": float, "data": dict}（按范围各缓存一份）
 _PLAT_TTL = 60.0
 
 
 @router.get("/api/admin/platforms")
-def admin_platforms(request: Request = None) -> dict[str, Any]:
+def admin_platforms(request: Request = None, range: str = "") -> dict[str, Any]:
     """超级管理员：端分布 —— 网页版 / Mac 版 / Windows 版各多少台。
 
     为什么必须单独有这个接口：运维页的「设备」列来自 nginx 访问日志的 UA，而桌面
@@ -819,9 +819,10 @@ def admin_platforms(request: Request = None) -> dict[str, Any]:
     _ops_guard(request)
     import time as _t
 
-    hit = _PLAT_CACHE.get("data")
-    if isinstance(hit, dict) and (_t.time() - float(_PLAT_CACHE.get("t") or 0)) < _PLAT_TTL:
-        return hit
+    hit = _PLAT_CACHE.get(range)
+    if isinstance(hit, dict) and isinstance(hit.get("data"), dict) \
+            and (_t.time() - float(hit.get("t") or 0)) < _PLAT_TTL:
+        return hit["data"]
     try:
         import admin_store
         import license_client
@@ -832,13 +833,12 @@ def admin_platforms(request: Request = None) -> dict[str, Any]:
     if not token:
         return {"ok": False, "error": "网页服务未配置 VDL_LICENSE_ADMIN_TOKEN"}
     try:
-        r = license_client.platform_stats_remote(token, timeout=15.0)
+        r = license_client.platform_stats_remote(token, timeout=15.0, range_key=range)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"授权中心不可达：{exc}"}
     if not isinstance(r, dict) or not r.get("ok"):
         return r if isinstance(r, dict) else {"ok": False, "error": "中心返回异常"}
-    _PLAT_CACHE["t"] = _t.time()
-    _PLAT_CACHE["data"] = r
+    _PLAT_CACHE[range] = {"t": _t.time(), "data": r}
     return r
 
 

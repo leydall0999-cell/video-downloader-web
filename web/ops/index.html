@@ -342,7 +342,7 @@ const sumObj = (o) => Object.values(o||{}).reduce((a,b)=>a+Number(b||0),0);
 
 async function loadPlatforms(key){
   try {
-    const r = await fetch('/api/admin/platforms', {headers:{'X-Admin-Key':key}});
+    const r = await fetch('/api/admin/platforms?range=' + encodeURIComponent(RANGE), {headers:{'X-Admin-Key':key}});
     if(!r.ok) throw new Error('platforms '+r.status);
     renderPlatforms(await r.json());
   } catch(e){
@@ -364,7 +364,8 @@ function renderPlatforms(d){
   (d.platforms||[]).forEach(x=>{ P[x.platform] = x; });
   const card = (cls, label, s) => {
     const n = s ? s.devices : 0;
-    const tip = s ? `${s.users} 个账号 · 近 7 天活跃 ${s.active_7d} 台` : '暂无设备';
+    // 设备/账号数都是时间范围内的活跃值（跟着上方 chips 走）；all_devices 是全量兜底
+    const tip = s ? `${s.users} 个账号 · 全部 ${s.all_devices ?? s.devices} 台` : '暂无设备';
     const key = s ? s.platform : '';
     const click = key ? ` data-plat="${esc(key)}" title="点击查看这一端的账号"` : '';
     return `<div class="platcard ${cls}"${click}><b>${num(n)}</b><span>${label}</span><small>${tip}</small></div>`;
@@ -374,7 +375,7 @@ function renderPlatforms(d){
     card('p-win','Windows 版', P.windows) +
     card('p-web','网页版', P.web) +
     (P.unknown && P.unknown.devices ? card('p-unk','未识别', P.unknown) : '');
-  $('platHint').textContent = `按设备计 · ${num(d.total_devices)} 台 / ${num(d.total_users)} 个账号`;
+  $('platHint').textContent = `${d.range_label || '全部'}活跃 · 按设备计 ${num(d.total_devices)} 台 / ${num(d.total_users)} 个账号`;
 
   const vs = d.versions || {};
   const vkeys = Object.keys(vs);
@@ -582,9 +583,12 @@ function catName(c){
   })[c] || (c || '-');
 }
 
+// 时间范围 → 「最近 N 天」接口（webstats / 解析需求榜）的天数映射
+const RANGE_DAYS = { 'day': 1, '3d': 3, 'week': 7, 'month': 30 };
+
 async function loadWebStats(key){
   try {
-    const r = await fetch('/api/webstats/summary?days=7', {headers:{'X-Admin-Key':key}});
+    const r = await fetch('/api/webstats/summary?days=' + (RANGE_DAYS[RANGE] || 7), {headers:{'X-Admin-Key':key}});
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const w = await r.json();
     const t = w.totals || {};
@@ -614,10 +618,10 @@ async function loadWebStats(key){
     $('wsRefsBody').innerHTML = '<tr><td colspan="2" class="empty">无</td></tr>';
   }
 }
-// 解析需求榜：解析失败自动登记的站点热度（近 12 周，按「站点×周」计数，重试不重复计）
+// 解析需求榜：解析失败自动登记的站点热度（随时间范围，按「站点×周」计数，重试不重复计）
 async function loadResolveDemand(key){
   try {
-    const r = await fetch('/api/admin/resolve-demand?days=84', {headers:{'X-Admin-Key':key}});
+    const r = await fetch('/api/admin/resolve-demand?days=' + (RANGE_DAYS[RANGE] || 7), {headers:{'X-Admin-Key':key}});
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const rows = d.demand || [];

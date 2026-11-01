@@ -526,12 +526,18 @@ def stat_query_remote(admin_token: str, base_url: Optional[str] = None,
 
 
 def platform_stats_remote(admin_token: str, base_url: Optional[str] = None,
-                          timeout: float = 12.0) -> dict[str, Any]:
+                          timeout: float = 12.0,
+                          range_key: str = "") -> dict[str, Any]:
     """管理员查「端分布」（`platform_stats`）：网页版 / Mac 版 / Windows 版。
 
     与 `stat_query_remote` 的区别：那边只认 device.platform，网页版设备没有这个
     字段会全部落进 unknown；这个接口额外用 `fp` 前缀（web-）与主机名兜底，
     才能把网页版正确归堆，并拆出网页版的系统 / 浏览器分布。只读，不写 state。
+
+    range_key：时间范围（day/3d/week/month，空=全部）。带范围时只统计
+    `last_seen` 落在窗口内的设备 —— 运维页的时间 chips 要能过滤端分布
+    （2026-11-01），窗口口径与 core._ops_range_start 完全一致，由授权中心计算。
     """
-    return _post("/api/license/platform_stats", {"token": admin_token},
+    return _post("/api/license/platform_stats",
+                 {"token": admin_token, "range": range_key or ""},
                  base_url, timeout)
