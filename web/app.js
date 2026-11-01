@@ -9976,7 +9976,7 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     el.pfAuthSwitch.textContent = pfAuthIsRegister ? '已有账号？登录' : '没有账号？注册';
     if (el.pfIdentLabel) el.pfIdentLabel.textContent = _identLabelText();
     if (el.pfIdentifier) {
-      el.pfIdentifier.placeholder = pfAuthIsRegister ? 'name@qq.com' : 'you@example.com';
+      el.pfIdentifier.placeholder = '邮箱（支持 QQ/163/谷歌邮箱）';
       // 注册态直接用 input[type=email] 收窄：手机自带键盘会跟着切到 @ 号布局
       el.pfIdentifier.type = pfAuthIsRegister ? 'email' : 'text';
     }
@@ -10154,7 +10154,7 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     el.amSwitch.textContent = amIsRegister ? '已有账号？登录' : '没有账号？注册';
     if (el.amIdentLabel) el.amIdentLabel.textContent = _identLabelText();
     if (el.amIdentifier) {
-      el.amIdentifier.placeholder = amIsRegister ? 'name@qq.com' : 'you@example.com';
+      el.amIdentifier.placeholder = '邮箱（支持 QQ/163/谷歌邮箱）';
       el.amIdentifier.type = amIsRegister ? 'email' : 'text';
     }
     amSetStatus('');
