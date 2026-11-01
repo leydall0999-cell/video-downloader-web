@@ -1488,22 +1488,45 @@ def _nginx_log_paths(max_files: int = 40) -> list:
     return older + ([base] if base.exists() else [])
 
 
-def _read_nginx_log_lines(per_file_cap: int = 20000) -> list:
-    """读全部访问日志行（.gz 自动解压），每文件只取末尾若干行防爆内存。"""
-    import gzip as _gz
+# 单个明文日志最多读尾部这么多字节。access.log 能长到几百 MB，而「尾部一段」
+# 就足够覆盖 30 天（实测一天几万行 ≈ 十几 MB），没必要整份读。
+_NGINX_TAIL_BYTES = 32 * 1024 * 1024
 
-    out: list = []
+
+def _iter_nginx_log_lines(per_file_cap: int = 20000):
+    """逐行产出访问日志（.gz 自动解压），**绝不把整份日志读进内存**。
+
+    🔴🔴 2026-11-01 事故：旧实现是 `f.readlines()[-cap:]` —— 先把整份文件读进内存
+    再切片，每个文件各存一份。运维面板一次刷新要打 6 个接口，我并发测了 4 个时间范围，
+    几百 MB 的日志在内存里叠了十几份 ⇒ ECS 内存打满，sshd 连 banner 都发不出来，
+    整站 CF 530。所以这里改成流式：
+      · 明文文件：seek 到「末尾 _NGINX_TAIL_BYTES」处、丢掉被截断的半行，逐行 yield，
+        内存 O(1)；
+      · .gz：流式解压，只用 deque 留末尾 per_file_cap 行，内存 O(cap)。
+    🔴 不要再改回 list：调用方只需要 for 循环，不需要「全部行」。
+    """
+    import gzip as _gz
+    from collections import deque as _deque
+
     for p in _nginx_log_paths():
         try:
             if p.suffix == ".gz":
+                tail: "_deque[str]" = _deque(maxlen=per_file_cap)
                 with _gz.open(p, "rt", encoding="utf-8", errors="replace") as f:
-                    out.extend(f.readlines()[-per_file_cap:])
+                    for ln in f:
+                        tail.append(ln)
+                yield from tail
             else:
-                with open(p, "r", encoding="utf-8", errors="replace") as f:
-                    out.extend(f.readlines()[-per_file_cap:])
+                size = p.stat().st_size
+                start = max(0, size - _NGINX_TAIL_BYTES)
+                with open(p, "rb") as f:
+                    if start:
+                        f.seek(start)
+                        f.readline()          # 丢掉被截断的半行
+                    for raw in f:
+                        yield raw.decode("utf-8", "replace")
         except Exception:
             continue          # 单个文件读不动就跳过，不影响其它
-    return out
 
 
 # 机器/脚本 UA 特征（我们自己 App 的轮询、脚本、扫描器等）
@@ -1614,15 +1637,65 @@ def _err_key(msg: str) -> str:
     return s[:180]
 
 
-@router.get("/api/admin/visits")
-def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
+# 访问统计的结果缓存（2026-11-01）。为什么需要：这个接口要扫全部轮转日志，
+# 冷一次要几百毫秒到几秒；而运维面板一次刷新同时打 6 个接口，用户还会连点四个
+# 时间范围。没有缓存时这些请求会叠加扫描，直接把内存/CPU 顶满（详见
+# _iter_nginx_log_lines 的注释）。15 秒对看板来说够新鲜，又能挡住连点。
+_VISITS_CACHE: dict = {}
+_VISITS_CACHE_TTL = 15.0
+# 同一时刻只允许一个请求在扫日志：解析是纯 Python 计算、长时间持有 GIL，
+# 并发扫会把**所有**接口一起拖慢（实测 14:56 连 /api/license-alerts 都 60s 超时）。
+# 后来者排队等锁，进来先看缓存，多半直接就命中拿到了。
+_VISITS_LOCK = __import__("threading").Lock()
+
+# nginx 时间戳缓存：'01/Nov/2026:15:06:12 +0800'
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))}
+_TS_CACHE: dict = {}
+
+
+def _log_ts(s: str):
+    """nginx 日志时间戳 → datetime（带缓存，手写解析）。
+
+    为什么不用 strptime：190k 行 × 约 10µs 就是 2 秒多，而且这段时间一直占着 GIL，
+    并发访问时会把整个后端拖成 60 秒超时（2026-11-01 那次全站卡死的主因之一）。
+    手写切片 + 秒级缓存，单行降到 1µs 量级。
+    """
+    if s in _TS_CACHE:
+        return _TS_CACHE[s]
+    d = None
+    try:
+        # 🔴 必须在这里显式导入 datetime：本模块**没有**模块级 datetime，
+        # 各个函数都是就地 import。少了这一句，下面 `datetime(...)` 直接 NameError、
+        # 被 except 吞掉变成 d=None ⇒ 时间过滤整个失效，四个时间范围返回同一份数据
+        # （2026-11-01 实测踩过：3000 条抽样全部不一致）。
+        from datetime import datetime as _dtc, timezone as _tz, timedelta as _td
+        tzs = s[-5:]
+        sign = -1 if tzs[:1] == "-" else 1
+        off = (int(tzs[1:3]) * 60 + int(tzs[3:5])) * sign
+        d = _dtc(int(s[7:11]), _MONTHS[s[3:6]], int(s[0:2]),
+                 int(s[12:14]), int(s[15:17]), int(s[18:20]),
+                 tzinfo=_tz(_td(minutes=off)))
+    except Exception:
+        d = None
+    if len(_TS_CACHE) < 200000:      # 防长跑进程无限增长
+        _TS_CACHE[s] = d
+    return d
+
+
+def _admin_visits_impl(request: app.Request, limit: int = 100, range: str = ""):
     """网站访客汇总：解析 nginx access.log，统计独立 IP / 状态码 / 热点路径 / 最近访问。
 
     range 时间窗：day=今天 / 3d=近三天 / week=近七天 / month=近三十天；空=全部（兼容旧调用）。
     这是「网页访问记录」的真正数据源（首页 /api/* 之外的真实外部访问）。
     本机（桌面 App WebView）免密钥，远端必须带正确 X-Admin-Key。
+
+    🔴 真正的路由在下面的 admin_visits：它负责「缓存 + 同一时刻只允许一个人扫」，
+    本函数只管算。别直接把 @router.get 挂到这里，否则并发扫会把整个后端拖死。
     """
     _require_admin(request)
+    import time as _time
+    _ck = range or "all"
     from datetime import datetime, timedelta, timezone
     threshold = _ops_range_start(range)
     import re as _re
@@ -1661,20 +1734,19 @@ def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
     other_reqs = 0
     other_ips: set = set()
     try:
-        raw_lines = _read_nginx_log_lines()
+        _log_paths = _nginx_log_paths()
     except Exception as e:
         return {"error": f"无法读取访问日志：{e}", "total": 0, "source": _NGINX_ACCESS_LOG}
-    if not raw_lines:
+    if not _log_paths:
         return {"error": "访问日志为空或不可读", "total": 0, "source": _NGINX_ACCESS_LOG}
-    for ln in raw_lines:
+    # 逐行流式（2026-11-01：原来先把整份日志读成 list，并发几个时间范围就把内存打满）
+    for ln in _iter_nginx_log_lines():
         m = line_re.search(ln)
         if not m:
             continue
         _dt = None
-        try:
-            _dt = datetime.strptime(m.group("t"), "%d/%b/%Y:%H:%M:%S %z")
-        except Exception:
-            pass
+        # 手写解析 + 秒级缓存，比 strptime 快一个数量级（见 _log_ts 说明）
+        _dt = _log_ts(m.group("t"))
         if threshold is not None and _dt is not None and _dt < threshold:
             continue
         total += 1
@@ -1730,7 +1802,7 @@ def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
             other_reqs += 1
             other_ips.add(ip)
             machine_requests += 1
-    return {
+    _payload = {
         "total": total,
         "unique_ips": len(ips),
         "by_status": dict(by_status.most_common()),
@@ -1764,6 +1836,33 @@ def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
         "range": range or "all",
         "range_label": _OPS_RANGE_LABELS.get(range, "全部"),
     }
+    # 结果缓存 15 秒：面板一次刷新要打 6 个接口，用户连点四个时间范围就是 4 次全量扫描。
+    # 有它在，同一范围 15 秒内重复请求（连点、多个标签页、iframe 重载）只扫一次日志。
+    _VISITS_CACHE[_ck] = (_time.time(), _payload)
+    return _payload
+
+
+@router.get("/api/admin/visits")
+def admin_visits(request: app.Request, limit: int = 100, range: str = ""):
+    """访问统计对外入口：缓存 + 串行化，真正的计算在 _admin_visits_impl。
+
+    为什么不直接在 impl 上挂路由：解析 19 万行日志是纯 Python 计算，长时间持有 GIL。
+    运维页一开就是 6 个并发请求，用户再连点四个时间范围，多条解析一起抢 GIL，
+    实测连 /api/license-alerts 这种无关接口都被拖到 60 秒超时（2026-11-01 全站卡死）。
+    所以这里：① 15 秒结果缓存；② 全局锁，同一时刻只让一个请求真正扫；
+    ③ 排队的请求进来先复查缓存，通常直接命中返回。
+    """
+    _require_admin(request)
+    import time as _time
+    _ck = range or "all"
+    _hit = _VISITS_CACHE.get(_ck)
+    if _hit and (_time.time() - _hit[0]) < _VISITS_CACHE_TTL:
+        return _hit[1]
+    with _VISITS_LOCK:
+        _hit = _VISITS_CACHE.get(_ck)
+        if _hit and (_time.time() - _hit[0]) < _VISITS_CACHE_TTL:
+            return _hit[1]
+        return _admin_visits_impl(request, limit, range)
 
 
 @router.get("/ops")
@@ -1808,7 +1907,7 @@ def _ops_range_start(range_key: str):
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-_OPS_RANGE_LABELS = {"day": "每天", "3d": "三天", "week": "每周", "month": "每月", "": "全部"}
+_OPS_RANGE_LABELS = {"day": "今天", "3d": "近 3 天", "week": "近 7 天", "month": "近 30 天", "": "全部"}
 
 
 def _ops_admin_key() -> str:
