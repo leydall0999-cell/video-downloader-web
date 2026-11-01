@@ -39,6 +39,10 @@
   #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; }
   .err { color:var(--red); }
   small.note { color:var(--muted); display:block; margin-top:8px; }
+  /* 被后台以 /ops/?embed=1 内嵌时：隐掉自己的标题栏和密钥框，避免后台里出现两层头；
+     鉴权由后台令牌自动带上，不需要人再输一次运维密钥。 */
+  body.embed header { display:none; }
+  body.embed .wrap { padding-top:14px; }
 </style>
 </head>
 <body>
@@ -110,6 +114,27 @@
 <div id="toast"></div>
 <script>
 const $ = (id) => document.getElementById(id);
+
+// ── 后台内嵌模式（2026-11-01）─────────────────────────────────────────────
+// 后台的「运维监控」页签已改为 iframe 内嵌本页（/ops/?embed=1），不再开新窗口。
+// 后台登录拿到的 adm 令牌存在 localStorage.vdl_admin_token，这里直接拿来鉴权：
+//   · 不用人再输一次「运维密钥」（以前跳出去后还得输，两道门）；
+//   · 后端 _require_admin 只对它放行**超管**，普通管理员仍进不来。
+// 用 fetch 钩子统一换头，而不是逐个改下面 6 处请求 —— 以后新增面板也不会漏。
+const EMBED = /[?&]embed=1/.test(location.search);
+const ADMIN_TOKEN = (localStorage.getItem('vdl_admin_token') || '').trim();
+if (ADMIN_TOKEN) {
+  const _fetch = window.fetch.bind(window);
+  window.fetch = function (url, opts) {
+    opts = opts || {};
+    const h = new Headers(opts.headers || {});
+    h.delete('X-Admin-Key');
+    h.set('Authorization', 'Bearer ' + ADMIN_TOKEN);
+    opts.headers = h;
+    return _fetch(url, opts);
+  };
+}
+if (EMBED) document.body.classList.add('embed');
 function toast(msg, isErr){ const t=$('toast'); t.textContent=msg; t.style.display='block'; t.style.borderColor=isErr?'var(--red)':'var(--line)'; clearTimeout(t._t); t._t=setTimeout(()=>t.style.display='none',2600); }
 function getKey(){ return sessionStorage.getItem('vdl_ops_key') || ''; }
 function setKey(k){ if(k) sessionStorage.setItem('vdl_ops_key', k); else sessionStorage.removeItem('vdl_ops_key'); }
@@ -118,9 +143,9 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;'
 
 async function load(){
   const key = $('key').value.trim() || getKey();
-  if(!key){ toast('请先输入运维密钥', true); return; }
-  setKey(key);
-  $('key').value = key;
+  // 内嵌模式且手里有后台令牌时，密钥不再是必要条件（请求头会被换成 Bearer）。
+  if(!key && !ADMIN_TOKEN){ toast('请先输入运维密钥', true); return; }
+  if(key){ setKey(key); $('key').value = key; }
   try {
     const [v, e] = await Promise.all([
       fetch('/api/admin/visits', {headers:{'X-Admin-Key':key}}).then(r=>{ if(!r.ok) throw new Error('visits '+r.status); return r.json(); }),
@@ -243,7 +268,10 @@ $('noticeSave').onclick = ()=> saveNotice(getKey() || $('key').value.trim());
 $('noticeReload').onclick = ()=> loadNotice(getKey() || $('key').value.trim());
 $('load').onclick = load;
 $('clear').onclick = ()=>{ setKey(''); $('key').value=''; toast('已清除本地密钥'); };
-if(getKey()){ $('key').value = getKey(); load(); }
+// 内嵌进来时直接拉数据（人已经在后台登录过了，不该再点一次「加载数据」）；
+// 独立打开本页仍沿用「有密钥就自动加载」的老行为。
+if(EMBED && ADMIN_TOKEN){ load(); }
+else if(getKey()){ $('key').value = getKey(); load(); }
 </script>
 </body>
 </html>

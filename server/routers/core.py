@@ -1076,6 +1076,21 @@ def _require_admin(request):
     """
     if _is_local_request(request):
         return
+    # 2026-11-01：网页后台改成独立登录（/admin/login，adm 作用域令牌）后，运维看板
+    # 改为在后台页签里**内嵌**，所以这里要认后台令牌 —— 否则用户进了后台还要再输
+    # 一次运维密钥，两道门叠在一起，实际体验就是「点了没反应」。
+    # 🔴 只认 adm 作用域令牌（2 小时）+ 且角色必须是超管：
+    #    运维数据含访问日志明文 IP 与订阅通知下发权限，不该因为「是个管理员」就默认可见；
+    #    普通前台登录令牌（30 天）**一律不走这条路**，仍只认 X-Admin-Key。
+    _auth = (request.headers.get("Authorization") or "").strip()
+    if _auth.startswith("Bearer "):
+        try:
+            from auth_store import user_role, verify_admin_token
+            _uid = verify_admin_token(_auth[7:].strip())
+            if _uid and user_role(_uid) == "super":
+                return
+        except Exception:  # noqa: BLE001 — 校验异常按未授权处理，落到下面的密钥分支
+            pass
     if not ADMIN_KEY:
         raise app.HTTPException(
             status_code=503,

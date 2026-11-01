@@ -100,8 +100,8 @@
   <button class="tab" data-tab="stats">使用统计</button>
   <button class="tab" data-tab="config">系统配置</button>
   <button class="tab" data-tab="ai">AI 计费</button>
-  <button class="tab" data-tab="ops">运维监控 ↗</button>
-  <button class="tab" data-tab="recon">每日对账 ↗</button>
+  <button class="tab" data-tab="ops">运维监控</button>
+  <button class="tab" data-tab="recon">每日对账</button>
   <button class="tab" data-tab="health">平台健康</button>
   <button class="tab" data-tab="cookies">Cookie 池</button>
 </nav>
@@ -265,6 +265,26 @@
     </p>
     <div class="kpis" id="cookieKpis"></div>
     <div id="cookieBox"></div>
+  </section>
+
+  <!-- 运维监控：直接内嵌 /ops 看板（2026-11-01）。
+       原来点这个页签是 window.open 开新窗口，等于从后台"跳出去"，还得再输一次
+       运维密钥。改成同页 iframe 后，登录态由后台令牌自动带上，不跳转也不再输密钥。 -->
+  <section class="panel view" id="opsPanel" data-view="ops" style="padding:0;overflow:hidden">
+    <iframe id="opsFrame" title="运维监控" style="width:100%;height:calc(100vh - 150px);min-height:520px;border:0;display:block;background:var(--bg)"></iframe>
+  </section>
+
+  <section class="panel view" id="reconPanel" data-view="recon">
+    <h2><span class="dot"></span>每日对账</h2>
+    <p class="note">
+      资金对账（已收款 / 已发货 / 卡密核销三类差异）目前只在<b>授权中心后台</b>提供，
+      网页后台还没有接这一块 —— 原来这里的页签其实是跳到一个不存在的锚点，
+      点开看到的仍是运维看板。
+    </p>
+    <p class="note">
+      运维侧的可观测数据（访客 / 错误事件 / 网页转化 / 解析需求 / 会员公告）
+      请切到「运维监控」，那一页已经在后台内直接打开了。
+    </p>
   </section>
 </div>
 
@@ -653,11 +673,12 @@
 
   // ---------------- 多页签（2026-11-01）----------------
   // 与 App 后台九个页签一一对应：看的本来就是同一份云端数据，只是入口不同。
-  // 「运维监控 / 每日对账」继续用 /ops/ 那块看板（Admin-Key 鉴权），这里是跳转入口，
-  // 不重复实现一份 —— 两份实现必然不同步。
+  // 「运维监控」在页内 iframe 打开 /ops 看板（不再 window.open 跳出去）；
+  // 「每日对账」数据只在授权中心，这页如实说明，不假装有内容。
   const TAB_TITLE = {
     users: '用户管理', members: '会员管理', stats: '使用统计', config: '系统配置',
     ai: 'AI 计费', health: '平台健康', cookies: 'Cookie 池',
+    ops: '运维监控', recon: '每日对账',
   };
   const loadedView = {};   // view -> 是否已拉过数据（懒加载：切过去才拉）
 
@@ -680,6 +701,12 @@
       b.classList.toggle('on', b.dataset.tab === name);
     });
     if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+    // iframe 懒加载：第一次切到「运维监控」才去请求 /ops，避免一进后台就多拉一个页面。
+    // embed=1 让 /ops 隐掉它自己的标题栏（否则后台里会出现两层头）。
+    if (name === 'ops') {
+      const f = $('opsFrame');
+      if (f && !f.getAttribute('src')) f.src = '/ops/?embed=1';
+    }
     ensureView(name);
   }
 
@@ -1175,17 +1202,10 @@
       toast('加载失败：' + e.message, 3600);
     });
   }
-  // 页签切换。运维监控 / 每日对账 继续走 /ops/ 那块看板（Admin-Key 鉴权），
-  // 这里只做跳转 —— 同一件事不实现两份。
+  // 页签切换。运维监控 / 每日对账 也在后台内打开 —— 不再 window.open 跳新窗口，
+  // 点页签就该留在同一个界面里（跳出去还得重新输运维密钥）。
   document.querySelectorAll('.tab[data-tab]').forEach((b) => {
-    b.addEventListener('click', () => {
-      const t = b.dataset.tab;
-      if (t === 'ops' || t === 'recon') {
-        window.open('/ops/' + (t === 'recon' ? '#recon' : ''), '_blank');
-        return;
-      }
-      showTab(t);
-    });
+    b.addEventListener('click', () => showTab(b.dataset.tab));
   });
   ['userSearch', 'userFilter'].forEach((id) => {
     const el = $(id);
