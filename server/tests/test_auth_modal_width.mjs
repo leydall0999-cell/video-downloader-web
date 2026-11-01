@@ -42,18 +42,15 @@ assert.ok(/max-width\s*:\s*400px/.test(am[1]),
 assert.ok(/width\s*:\s*min\(\s*400px/.test(am[1]),
   `#authModal 的 width 应写成 min(400px, 100% - 2rem) 以兼容窄屏，实际：${am[1].trim()}`);
 
-// ---- ③ 登录方式文案（用户指定口径：电话号码 / QQ邮箱 / Gmail邮箱）----
-// 三处都挂这个口径：个人中心登录表单、重置密码表单、全局登录弹窗。
-const IDENT_LABEL = '电话号码 / QQ邮箱 / Gmail邮箱';
-const labelRe = new RegExp(IDENT_LABEL.replace(/\//g, '\\/'), 'g');
-const labelCount = (indexHtml.match(labelRe) || []).length;
+// ---- ③ 登录方式文案（2026-11-01 用户口径：只写「邮箱」）----
+// 挂这个口径的两处：个人中心登录表单（#pfIdentLabel）、全局登录弹窗（#amIdentLabel）。
+// ⚠️ 旧口径已作废：「电话号码 / QQ邮箱 / Gmail邮箱」（2026-10-08）、“邮箱 / 手机号”（2026-11-01 早间）。
+//    网页版注册只收邮箱、手机号既无短信通道也找不回密码 ⇒ 界面不该再出现任何手机号提示。
+const labelCount = (indexHtml.match(/<span class="uc-label" id="(?:pf|am)IdentLabel">邮箱<\/span>/g) || []).length;
 assert.ok(labelCount >= 2,
-  `账号字段应显示「${IDENT_LABEL}」，实际命中 ${labelCount} 处`);
-assert.ok(!/邮箱 \/ 手机号/.test(indexHtml),
-  '旧的「邮箱 / 手机号」口径已被用户指定替换，不应残留（含重置密码表单的「账号（…）」标签）');
-// 反回归：不得残留「未标注 Gmail」的旧文案（后面紧跟 " /" 的才是新文案）
-assert.ok(!/电话号码 \/ QQ邮箱(?!\s*\/)/.test(indexHtml),
-  '残留了未标注 Gmail 的旧文案「电话号码 / QQ邮箱」—— 用户这次就是要求补上 Gmail');
+  `账号字段应显示「邮箱」（#pfIdentLabel / #amIdentLabel 各一处），实际命中 ${labelCount} 处`);
+assert.ok(!/手机号|电话号码/.test(indexHtml),
+  '界面不得再出现「手机号 / 电话号码」字样（用户要求关于手机注册的提示全部去掉）');
 
 // 文案承诺的每一种账号类型，后端必须真的接受，否则就是虚假宣传。
 // 做法：直接从 auth.py 抽出真正则（语法与 JS 兼容）在本地跑，属确定性纯函数验证。
@@ -71,6 +68,6 @@ for (const bad of ['user@', '@gmail.com', 'user', 'user@gmail', 'user @gmail.com
 assert.ok(/gmail\.com/i.test(authPy),
   'auth.py 的注释应说明支持 Gmail 邮箱（文案「Gmail邮箱」的依据）');
 assert.ok(/_PHONE_RE = re\.compile\(r"\^1\[3-9\]\\d\{9\}\$"\)/.test(authPy),
-  'auth.py 应支持 11 位手机号（文案「电话号码」的依据）');
+  'auth.py 应保留 11 位手机号解析 —— 界面虽只提邮箱，但老手机号账号登进来必须仍能过（登录不宣传、不阻断）');
 
-console.log('✅ 登录弹窗定宽与登录方式文案回归通过（无内联宽度 / #authModal 400px / 电话号码·QQ邮箱·Gmail邮箱）');
+console.log('✅ 登录弹窗定宽与登录方式文案回归通过（无内联宽度 / #authModal 400px / 账号字段只写「邮箱」）');

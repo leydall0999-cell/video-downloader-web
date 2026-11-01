@@ -204,7 +204,8 @@ def auth_register(request: Request, response: Response,
         return {"ok": False, "error": "请输入邮箱"}
     if "@" not in ident:
         # 注册只走邮箱：没有短信通道，手机号账号既收不到验证码也无法自助找回密码。
-        return {"ok": False, "error": "手机号注册已关闭，请改用邮箱注册（此前注册的手机号账号仍可正常登录）"}
+        # 界面已完全不提手机号（2026-11-01 用户要求），这里也不再点名。
+        return {"ok": False, "error": "请输入有效的邮箱地址"}
     if not _is_valid_email(ident):
         return {"ok": False, "error": "邮箱格式不正确，请检查后重试"}
     if len(pw) < 6:
@@ -471,7 +472,7 @@ def auth_reset_code(request: Request, payload: dict[str, Any] = Body(...)) -> di
     if not _is_valid_email(ident):
         if "@" in ident:
             return {"ok": False, "error": "邮箱格式不正确，请检查后重试"}
-        return {"ok": False, "error": "请输入注册邮箱（手机号账号请联系客服重置）"}
+        return {"ok": False, "error": "请输入注册邮箱"}
     from auth_store import (
         generate_reset_code,
         reset_code_cooldown_ok,

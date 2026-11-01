@@ -9886,9 +9886,9 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
   const pfSetAuthStatus = (t) => { el.pfAuthStatus.textContent = t || ''; };
 
   // 与后端 routers/auth.py 的 _EMAIL_RE 同款：注册/找回只收邮箱（2026-11-01）。
-  // 登录仍允许手机号 —— 早前用手机号注册的老账号得能登进来。
+  // 界面上只提邮箱——手机号相关提示全部去掉；后端登录仍兼容老手机号账号（不宣传）。
   const _EMAIL_OK_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
-  const _identLabelText = (isReg) => (isReg ? '邮箱' : '邮箱 / 手机号');
+  const _identLabelText = () => '邮箱';
   const pfDoAuth = async () => {
     const ident = el.pfIdentifier.value.trim();
     const pw = el.pfPassword.value;
@@ -9927,9 +9927,9 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     el.pfAuthModeTitle.textContent = pfAuthIsRegister ? '注册新账号' : '登录账号';
     el.pfAuthSubmit.textContent = pfAuthIsRegister ? '注册' : '登录';
     el.pfAuthSwitch.textContent = pfAuthIsRegister ? '已有账号？登录' : '没有账号？注册';
-    if (el.pfIdentLabel) el.pfIdentLabel.textContent = _identLabelText(pfAuthIsRegister);
+    if (el.pfIdentLabel) el.pfIdentLabel.textContent = _identLabelText();
     if (el.pfIdentifier) {
-      el.pfIdentifier.placeholder = pfAuthIsRegister ? 'name@qq.com' : '邮箱或手机号';
+      el.pfIdentifier.placeholder = pfAuthIsRegister ? 'name@qq.com' : 'you@example.com';
       // 注册态直接用 input[type=email] 收窄：手机自带键盘会跟着切到 @ 号布局
       el.pfIdentifier.type = pfAuthIsRegister ? 'email' : 'text';
     }
@@ -10105,9 +10105,9 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
     el.authModalTitle.textContent = amIsRegister ? '注册新账号' : '登录账号';
     el.amSubmit.textContent = amIsRegister ? '注册' : '登录';
     el.amSwitch.textContent = amIsRegister ? '已有账号？登录' : '没有账号？注册';
-    if (el.amIdentLabel) el.amIdentLabel.textContent = _identLabelText(amIsRegister);
+    if (el.amIdentLabel) el.amIdentLabel.textContent = _identLabelText();
     if (el.amIdentifier) {
-      el.amIdentifier.placeholder = amIsRegister ? 'name@qq.com' : '邮箱或手机号';
+      el.amIdentifier.placeholder = amIsRegister ? 'name@qq.com' : 'you@example.com';
       el.amIdentifier.type = amIsRegister ? 'email' : 'text';
     }
     amSetStatus('');
@@ -10231,7 +10231,7 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
   el.pfResetSendBtn.addEventListener('click', async () => {
     const ident = el.pfResetIdent.value.trim();
     if (!ident) { pfSecStatus('请输入注册时使用的邮箱'); return; }
-    if (!_EMAIL_OK_RE.test(ident)) { pfSecStatus('请填写注册邮箱（手机号账号请联系客服重置）'); return; }
+    if (!_EMAIL_OK_RE.test(ident)) { pfSecStatus('请填写注册邮箱'); return; }
     pfSecStatus('验证码发送中…');
     try {
       const data = await request('/api/auth/reset-code', {
