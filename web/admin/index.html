@@ -751,9 +751,12 @@
     if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
     // iframe 懒加载：第一次切到「运维监控」才去请求 /ops，避免一进后台就多拉一个页面。
     // embed=1 让 /ops 隐掉它自己的标题栏（否则后台里会出现两层头）。
+    // t=当前时间戳：运维页是不带版本号的 HTML，改完直接热更。URL 若固定不变，
+    // 浏览器会按启发式缓存把旧页面留上一段时间 —— 2026-11-01 就因此出现过
+    // 「线上已是新版、后台里还是旧版 KPI」的假象（nginx 侧已加 no-store，这里是第二道保险）。
     if (name === 'ops') {
       const f = $('opsFrame');
-      if (f && !f.getAttribute('src')) f.src = '/ops/?embed=1';
+      if (f && !f.getAttribute('src')) f.src = '/ops/?embed=1&t=' + Date.now();
     }
     ensureView(name);
   }
