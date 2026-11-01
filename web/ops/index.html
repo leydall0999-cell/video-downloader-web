@@ -69,7 +69,9 @@
   /* 端分布卡片：Mac / Windows / 网页版各一格。数字是「设备台数」，
      和上面 KPI 的「请求次数」不是一个口径，标题里已写明。 */
   .platrow { display:grid; grid-template-columns:repeat(auto-fit,minmax(116px,1fr)); gap:10px; }
-  .platcard { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .platcard { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer; }
+  .platcard:hover { border-color:var(--accent); }
+  .platcard.on { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
   .platcard b { display:block; font-size:21px; line-height:1.2; font-variant-numeric:tabular-nums; }
   .platcard span { color:var(--muted); font-size:12px; }
   .platcard small { display:block; color:var(--muted); font-size:11px; margin-top:2px; line-height:1.4; }
@@ -133,6 +135,7 @@
   <section class="panel">
     <h2><span class="dot" style="background:var(--violet)"></span>端分布 · 谁在用哪一版<small id="platHint"></small></h2>
     <div class="platrow" id="platCards"><div class="empty">加载中…</div></div>
+    <div id="platAccounts"></div>
     <h3 class="sub">桌面端版本分布</h3>
     <div class="mini" id="platVersions"></div>
     <h3 class="sub">网页版细分（按设备）</h3>
@@ -350,15 +353,21 @@ async function loadPlatforms(key){
 function renderPlatforms(d){
   if(!d || !d.ok){
     $('platCards').innerHTML = `<div class="empty err">${esc((d && d.error) || '端分布不可用')}</div>`;
+    $('platAccounts').innerHTML = '';
     $('platHint').textContent = '';
     return;
   }
+  window.PLAT_DATA = d;          // 点卡片展开账号时用
+  window.PLAT_CUR = null;        // 重渲染后收起，避免展示过期数据
+  $('platAccounts').innerHTML = '';
   const P = {};
   (d.platforms||[]).forEach(x=>{ P[x.platform] = x; });
   const card = (cls, label, s) => {
     const n = s ? s.devices : 0;
     const tip = s ? `${s.users} 个账号 · 近 7 天活跃 ${s.active_7d} 台` : '暂无设备';
-    return `<div class="platcard ${cls}"><b>${num(n)}</b><span>${label}</span><small>${tip}</small></div>`;
+    const key = s ? s.platform : '';
+    const click = key ? ` data-plat="${esc(key)}" title="点击查看这一端的账号"` : '';
+    return `<div class="platcard ${cls}"${click}><b>${num(n)}</b><span>${label}</span><small>${tip}</small></div>`;
   };
   $('platCards').innerHTML =
     card('p-mac','Mac 版', P.macos) +
@@ -394,6 +403,44 @@ function renderPlatforms(d){
       <td class="num">${ago(r.last_seen)}</td></tr>`).join('')
     || '<tr><td colspan="5" class="empty">无</td></tr>';
 }
+
+// 点端分布卡片 → 展开/收起这一端的账号清单（数据已在 platforms[].accounts 里，无需再请求）
+  (function(){
+    const box = $('platCards');
+    if (box._platBound) return;
+    box._platBound = true;
+    box.addEventListener('click', (e) => {
+      const c = e.target.closest('.platcard[data-plat]');
+      if (!c) return;
+      showPlatAccounts(c.dataset.plat);
+    });
+  })();
+
+  function showPlatAccounts(key){
+    const out = $('platAccounts');
+    if (window.PLAT_CUR === key){ window.PLAT_CUR = null; out.innerHTML = ''; markPlatSel(); return; }
+    window.PLAT_CUR = key;
+    markPlatSel();
+    const d = window.PLAT_DATA || {};
+    const s = (d.platforms||[]).find(x=>x.platform===key);
+    const label = s ? s.label : key;
+    const rows = (s && s.accounts) || [];
+    const body = rows.map(r=>`<tr>
+      <td class="path" title="${esc(r.email)}">${esc(r.email)}</td>
+      <td>${num(r.devices)} 台</td>
+      <td style="text-align:right">${ago(r.last_seen)}</td></tr>`).join('')
+      || '<tr><td colspan="3" class="empty">授权中心还没记录这一端的账号</td></tr>';
+    out.innerHTML = `<h3 class="sub">${esc(label)} · ${rows.length} 个账号</h3>
+      <div class="recent"><table>
+        <thead><tr><th>账号</th><th>设备</th><th style="text-align:right">最后活跃</th></tr></thead>
+        <tbody>${body}</tbody></table></div>`;
+  }
+
+  function markPlatSel(){
+    document.querySelectorAll('#platCards .platcard').forEach(c=>{
+      c.classList.toggle('on', c.dataset.plat === window.PLAT_CUR);
+    });
+  }
 
 const MAX_ROWS = 6;
 function miniBars(obj, total){
