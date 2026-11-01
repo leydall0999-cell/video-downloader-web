@@ -767,12 +767,13 @@
     return id;
   };
 
-  // —— 匿名免费体验计数（2026-11-01）——
+  // —— 匿名免费体验计数（2026-11-01；次数与 server/routers/core.py 的 _GUEST_FREE_DOWNLOADS 保持一致）——
   // 权威计数在服务端（按 IP），这里只存「本浏览器已用过免费次数」，用途是
   // 用完之后点「下载」不再发无效请求、直接弹注册框。存不了（隐私模式）按已用完处理。
+  const GUEST_FREE_DL = 3;  // 2026-11-01 用户拍板 1→3
   const guestDlUsed = () => {
     try { return parseInt(localStorage.getItem('vdl_guest_dl_used') || '0', 10) || 0; }
-    catch (_e) { return 1; }
+    catch (_e) { return GUEST_FREE_DL; }
   };
   const guestDlMarkUsed = () => {
     try { localStorage.setItem('vdl_guest_dl_used', String(guestDlUsed() + 1)); } catch (_e) { /* ignore */ }
@@ -10223,7 +10224,7 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
       if (!t || typeof t.closest !== 'function') return;
       if (!t.closest('#downloadBtn')) return;
       if (pfToken()) return;                              // 已登录：放行
-      if (guestDlUsed() < 1) return;                      // 首次免费：放行
+      if (guestDlUsed() < GUEST_FREE_DL) return;          // 免费额度未用完：放行
       if (e.defaultPrevented) return;
       _pendingGatedId = 'downloadBtn';
       e.preventDefault();

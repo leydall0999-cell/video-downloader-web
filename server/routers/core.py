@@ -577,7 +577,7 @@ _LOGIN_REQUIRED_MSG = "下载前请先登录账号（登陆享受下载权益）
 # 改为：匿名访客按真实 IP 放行 _GUEST_FREE_DOWNLOADS 次下载，用完后 403 引导注册
 # （前端 needLogin 正则按「登录」二字识别，文案必须含该词）。权威计数落服务器
 # 磁盘 JSON（按 IP），前端 localStorage 只做体验优化（用完即拦、不发无效请求）。
-_GUEST_FREE_DOWNLOADS = 1
+_GUEST_FREE_DOWNLOADS = 3  # 未登录访客的免费下载次数（2026-11-01 用户拍板 1→3，多给甜头换注册）
 _GUEST_EXHAUSTED_MSG = "免费下载体验已用完，注册或登录后即可继续使用下载"
 _GUEST_STORE_LOCK = threading.Lock()
 

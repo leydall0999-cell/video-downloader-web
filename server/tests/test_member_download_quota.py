@@ -109,6 +109,8 @@ def test_anonymous_first_free_then_403():
         from pathlib import Path as _P
         _orig_gsp = core_rt._guest_store_path
         core_rt._guest_store_path = lambda: _P(d) / "guest_downloads.json"
+        _orig_gfd = core_rt._GUEST_FREE_DOWNLOADS
+        core_rt._GUEST_FREE_DOWNLOADS = 1  # 固定为 1 次跑门禁逻辑，与线上值解耦
         try:
             req = _StubRequest()
             # 第一次：匿名放行（mode=guest），任务创建成功且按 IP 计数
@@ -131,6 +133,7 @@ def test_anonymous_first_free_then_403():
             assert store.quota_state("download")["used"] == 0, "匿名体验不占任何账号额度"
         finally:
             core_rt._guest_store_path = _orig_gsp  # 恢复真函数，避免污染其它用例
+            core_rt._GUEST_FREE_DOWNLOADS = _orig_gfd
     print("✅ 匿名首次免费下载（按 IP 计数），用完 403 引导注册，不占账号额度")
 
 
@@ -304,6 +307,8 @@ def test_relay_mode_gate_and_count():
             from pathlib import Path as _P
             _orig_gsp = core_rt._guest_store_path
             core_rt._guest_store_path = lambda: _P(d) / "guest_downloads.json"
+            _orig_gfd = core_rt._GUEST_FREE_DOWNLOADS
+            core_rt._GUEST_FREE_DOWNLOADS = 1  # 固定为 1 次跑门禁逻辑，与线上值解耦
             try:
                 core_rt._relay_member_quota = lambda req, p: {
                     "ok": False, "code": "NO_AUTH", "error": "请先登录账号"}
@@ -319,6 +324,7 @@ def test_relay_mode_gate_and_count():
                 assert "登录" in raised.detail, "403 文案必须含「登录」以触发前端弹框"
             finally:
                 core_rt._guest_store_path = _orig_gsp
+                core_rt._GUEST_FREE_DOWNLOADS = _orig_gfd
 
             # 5b. cn 不可达（回派返回 None）→ fail-open 放行
             core_rt._relay_member_quota = lambda req, p: None
