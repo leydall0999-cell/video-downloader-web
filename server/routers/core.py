@@ -1809,6 +1809,9 @@ def _admin_visits_impl(request: app.Request, limit: int = 100, range: str = ""):
     # 这里另算一套：只认「浏览器 UA + 页面级路径（排除 /api /gw /internal /静态资源）」。
     human_pv = 0
     human_uv: set = set()
+    human_sessions = 0                  # 会话数：同一访客（IP+浏览器）间隔超 _SESS_GAP 再访问算新一次到访
+    _sess_last: dict = {}               # (ip, ua_hash) -> 上次页面访问时刻
+    _SESS_GAP = 1800.0                  # 30 分钟无页面访问即视为离开（业界通用会话切分，GA 同款）
     human_ips: set = set()
     human_pages: Counter = Counter()
     machine_requests = 0
@@ -1883,7 +1886,16 @@ def _admin_visits_impl(request: app.Request, limit: int = 100, range: str = ""):
             if _is_page_path(path):
                 human_pv += 1
                 human_ips.add(ip)
-                human_uv.add((ip, hash(ua) & 0xFFFF))
+                _uk = (ip, hash(ua) & 0xFFFF)
+                human_uv.add(_uk)
+                # 会话切分（2026-11-02）：同一访客隔了一段时间再来要重算一次到访。
+                # 日志流按时间从旧到新（_nginx_log_paths 保证），逐行比对上次页面访问时刻即可。
+                _ts = _dt.timestamp() if _dt is not None else None
+                _prev = _sess_last.get(_uk)
+                if _prev is None or (_ts is not None and _ts - _prev > _SESS_GAP):
+                    human_sessions += 1
+                if _ts is not None:
+                    _sess_last[_uk] = _ts
                 human_pages[path] += 1
             else:
                 # 浏览器打的接口/静态资源 = 网页版前端的轮询
@@ -1913,10 +1925,11 @@ def _admin_visits_impl(request: app.Request, limit: int = 100, range: str = ""):
         "human": {
             "pv": human_pv,
             "uv": len(human_uv),
+            "sessions": human_sessions,
             "ips": len(human_ips),
             "machine_requests": machine_requests,
             "top_pages": [{"path": k, "count": v} for k, v in human_pages.most_common(10)],
-            "note": "真人访客 = 浏览器 UA 且访问页面级路径；已排除 /api /gw /internal 接口、静态资源与机器请求（App 轮询/健康检查/脚本）",
+            "note": "真人访客 = 浏览器 UA 且访问页面级路径；已排除 /api /gw /internal 接口、静态资源与机器请求（App 轮询/健康检查/脚本）。sessions=到访次数：同一访客（IP+浏览器）间隔超 30 分钟再访问页面即计新一次",
         },
         "by_client": {
             "desktop_app": {"requests": app_reqs, "ips": len(app_ips)},

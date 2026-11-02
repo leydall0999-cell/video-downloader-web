@@ -323,6 +323,7 @@ function renderKpis(v, e){
   const box = (label, val, sub, cls) => `<div class="kpi ${cls||''}"><b>${val}</b><span>${label}</span>${sub?`<small>${sub}</small>`:''}</div>`;
   $('kpis').innerHTML =
     box('真人访问 PV', num(h.pv), '页面级浏览', 'hl') +
+    box('真人到访次数', num(h.sessions != null ? h.sessions : '—'), '隔30分钟以上算新一次') +
     box('真人访客 UV', num(h.uv), '按 IP+UA 去重') +
     // 「网页 · 电脑 / 手机」就是网页版的两个入口；「桌面 App」是 Mac + Win 的合计
     // —— 客户端 UA 都是 python-requests，日志里无法再拆，拆端看下方「端分布」。
@@ -376,7 +377,7 @@ function renderPlatforms(d){
   const hv = (window.VISITS_DATA && window.VISITS_DATA.human) || {};
   const webS = P.web || { devices: 0, users: 0 };
   const webN = Number(hv.uv != null ? hv.uv : webS.devices);
-  const webCard = `<div class="platcard p-web" data-plat="web" title="点击查看登录过的账号（不含未登录访客）"><b>${num(webN)}</b><span>网页版</span><small>访客（含未登录）· 登录设备 ${num(webS.devices)} 台 / ${num(webS.users)} 账号</small></div>`;
+  const webCard = `<div class="platcard p-web" data-plat="web" title="点击查看登录过的账号（不含未登录访客）"><b>${num(webN)}</b><span>网页版</span><small>访客（含未登录）${hv.sessions != null ? ` · 到访 ${num(hv.sessions)} 次` : ''} · 登录设备 ${num(webS.devices)} 台 / ${num(webS.users)} 账号</small></div>`;
   $('platCards').innerHTML =
     card('p-mac','Mac 版', P.macos) +
     card('p-win','Windows 版', P.windows) +
