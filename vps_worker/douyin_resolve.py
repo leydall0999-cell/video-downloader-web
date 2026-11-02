@@ -5,25 +5,50 @@
 a_bogus 签名，yt-dlp 未实现，报 "Fresh cookies needed"），即使带完整登录态
 cookie 也无解。但真实浏览器执行 JS 后能拿到真实视频流 URL。
 
-本脚本用无头 Chromium 打开抖音视频页（游客态，无需登录），提取：
-  - 标题（document.title 去掉 " - 抖音" 后缀）
-  - video_url：视频轨（media-video-avc1）
-  - audio_url：音频轨（media-audio-und-mp4a，抖音 PC 网页音视频分离）
-  - 时长 / 视频 ID
+默认游客态（持久 profile，无需登录）。2026-11-02 起支持 cookies 参数：当传入
+云端 Cookie 池的有效抖音登录态时，用干净临时 profile + Windows Chrome UA 注入
+登录态，以真实浏览器身份突破抖音 Argus 第二层 UIFID 设备指纹校验（纯 HTTP 直连
+的游客 a_bogus 签名因设备指纹与登录态 UIFID 不绑定而被确定性拦截）。
 
-短链 v.douyin.com/xxx 会被浏览器自动 302 展开；无效短链会落到首页（无
-/video/ 数字ID 或 modal_id），据此判定失败。
-
-对外暴露 resolve(url) 供守护进程 vdl_cookie_daemon.py 复用。
+对外暴露 resolve(url[, cookies]) 供守护进程 vdl_cookie_daemon.py 复用。
 """
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 
 PROFILE = "/opt/vdl-worker/douyin_resolve_profile"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+# 登录态 Cookie 来自 Windows Chrome 130（池里贡献者的设备），注入时用同款 UA
+# 声明，避免 UA 与 Cookie 设备平台不符触发额外风控。
+WINDOWS_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+
+
+def _parse_header_cookies(header_str, domain=".douyin.com"):
+    """把 Cookie 池的 `k=v; k2=v2` header 文本解析成 Playwright add_cookies 列表。
+
+    统一落到 .douyin.com 通配域（覆盖 www/v/iesdouyin 等子域）；跳过非 cookie
+    属性的伪字段（path/domain/expires 等可能混入）。返回 [] 表示无有效 cookie。
+    """
+    out = []
+    if not header_str:
+        return out
+    for part in header_str.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, _, v = part.partition("=")
+        k, v = k.strip(), v.strip()
+        if k.lower() in ("path", "domain", "expires", "max-age",
+                         "secure", "httponly", "samesite"):
+            continue
+        out.append({"name": k, "value": v, "domain": domain, "path": "/"})
+    return out
+
 
 _VID_RE = re.compile(r"/video/(\d{15,})")
 _MODAL_RE = re.compile(r"[?&]modal_id=(\d{15,})")
@@ -98,16 +123,34 @@ def _normalize_douyin_url(url: str) -> str:
     return url
 
 
-def resolve(url, timeout=30):
-    """解析抖音视频，返回 dict（成功）或抛 RuntimeError（失败）。"""
+def resolve(url, timeout=30, cookies=None):
+    """解析抖音视频，返回 dict（成功）或抛 RuntimeError（失败）。
+
+    cookies：可选登录态 Cookie（云端池 header 文本）。提供时：用临时干净 profile
+        注入登录态 + Windows Chrome UA（与登录态设备一致），以真实浏览器身份
+        突破抖音 Argus 第二层 UIFID 设备指纹校验（纯 HTTP 直连的游客 a_bogus
+        签名因设备指纹与登录态 UIFID 不绑定而被确定性拦截）。缺省走游客态
+        （持久 profile，无登录态，仅用于无登录态时的兜底）。
+    """
     url = _normalize_douyin_url(url)
     from playwright.sync_api import sync_playwright
 
-    os.makedirs(PROFILE, exist_ok=True)
+    use_login = bool(cookies)
+    tmp_profile = None
+    if use_login:
+        # 干净临时 profile：避免持久 profile 里的游客 UIFID_TEMP 与登录态 UIFID 冲突
+        tmp_profile = tempfile.mkdtemp(prefix="dyr_login_")
+        profile_dir = tmp_profile
+        ua = WINDOWS_UA
+    else:
+        profile_dir = PROFILE
+        ua = UA
+        os.makedirs(PROFILE, exist_ok=True)
+
     pw = sync_playwright().start()
     try:
         context = pw.chromium.launch_persistent_context(
-            user_data_dir=PROFILE,
+            user_data_dir=profile_dir,
             headless=True,
             args=[
                 "--no-sandbox",
@@ -115,10 +158,18 @@ def resolve(url, timeout=30):
                 "--disable-blink-features=AutomationControlled",
                 "--autoplay-policy=no-user-gesture-required",
             ],
-            user_agent=UA,
+            user_agent=ua,
             viewport={"width": 1280, "height": 800},
             locale="zh-CN",
         )
+        if use_login:
+            # 注入登录态：Chrome 原生生成的签名/指纹与登录态天然一致，破 Argus
+            try:
+                ck_list = _parse_header_cookies(cookies)
+                if ck_list:
+                    context.add_cookies(ck_list)
+            except Exception as e:  # noqa: BLE001
+                print("[douyin_resolve] 注入登录态失败: %s" % str(e)[:120])
         try:
             context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -229,16 +280,19 @@ def resolve(url, timeout=30):
             context.close()
     finally:
         pw.stop()
+        if tmp_profile and os.path.isdir(tmp_profile):
+            shutil.rmtree(tmp_profile, ignore_errors=True)
 
 
 if __name__ == "__main__":
     u = sys.argv[1] if len(sys.argv) > 1 else ""
     if not u:
-        print("用法: python douyin_resolve.py <抖音链接>")
+        print("用法: python douyin_resolve.py <抖音链接> [cookie_header]")
         sys.exit(1)
     import json
+    ck = sys.argv[2] if len(sys.argv) > 2 else None
     try:
-        r = resolve(u)
+        r = resolve(u, cookies=ck)
         print(json.dumps(r, ensure_ascii=False, indent=2))
     except Exception as e:
         print("FAIL:", str(e))
