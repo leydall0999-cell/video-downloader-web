@@ -245,8 +245,12 @@ def test_server_level_limit_and_gateway_stays_tight():
 
     gw, gw_pattern, _ = effective_limit(conf, "/gw/v1/chat/completions")
     assert gw >= 1 * MB, "/gw/ 上限异常小：%s" % gw
-    assert gw <= 64 * MB, (
-        "/gw/（LLM 网关）上限被放开到 %s —— server 级放宽时忘了给它写回紧上限" % gw)
+    # 上限 64MB → 128MB（2026-11-03 同步）：2026-11-01 `93b5b6d` 为「抠图要传图」
+    # 把 /gw/ 从 16m 显式抬到 128m（线上 /etc/nginx/sites-enabled/vdl-gateway 同值）。
+    # 这条断言真正要守的是「/gw/ 有**显式**紧上限、不继承 server 级 1024m」，
+    # 所以保留硬上限、只把数字对齐现状；再被抬到与 server 级同量级时仍会报红。
+    assert gw <= 128 * MB, (
+        "/gw/（LLM 网关）上限被放开到 %s —— 超过 128MB 说明 server 级放宽时忘了给它写回紧上限" % gw)
     print("✅ server 级上限给整文件上传兜底，/gw/ 仍保持紧上限")
 
 

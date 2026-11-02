@@ -113,6 +113,19 @@ WRITE = re.compile(r"@router\.(post|put|patch|delete)\(")
 # VDL_COOKIE_SYNC_TOKEN（供桌面 App 后台代理云端池），本就没有用户身份。
 _TOKEN_AUTH_ROUTES = ("/api/cookie/pool-admin",)
 
+# 登录入口**必须**匿名可访问（登录页 + 登录接口本身），任何令牌都不该要求 ——
+# 否则谁也登不进后台。这是唯一允许「无闸门」的白名单；新增条目必须在此写明理由。
+_PUBLIC_ROUTES = ("/admin/login", "/api/admin/login")
+
+# 认可的写闸门写法（2026-11-03 补齐）：三者都**不弱于** require_super。
+#   require_super(request)         —— 桌面 App 后台兼容（普通/后台令牌都收，但必须超管）
+#   require_super_backend(request) —— 只认 2h 后台令牌，比上面更严（改价/改额度专用）
+#   _ops_guard(request)            —— core._require_admin（adm 令牌 + 超管 / X-Admin-Key / 本机）
+# 只认字面量 require_super(request) 会把后两种**更严**的闸门误报成「没闸门」，
+# 于是守卫常红、真回退反而被噪音淹没。
+_WRITE_GATES = ("require_super(request)", "require_super_backend(request)", "_ops_guard(request)")
+_READ_GATES = ("require_admin(request)", "_ops_guard(request)")
+
 
 def scan(fname: str):
     """返回 (写接口数, 只读接口数, 漏闸门的写路由行号, 误用 super 的读路由行号)。
@@ -141,8 +154,8 @@ def scan(fname: str):
             if pending is not None:
                 close(pending[0], pending[1])
             route = line
-            if any(t in route for t in _TOKEN_AUTH_ROUTES):
-                pending = None          # 令牌鉴权接口，跳过
+            if any(t in route for t in _TOKEN_AUTH_ROUTES + _PUBLIC_ROUTES):
+                pending = None          # 令牌鉴权 / 登录入口，跳过
             else:
                 pending = ("write", i, route) if is_write else ("read", i, route)
             if is_write:
@@ -150,16 +163,22 @@ def scan(fname: str):
             else:
                 r += 1
             continue
-        if pending and "require_super(request)" in line:
-            if pending[0] != "write":
+        if pending and pending[0] == "write":
+            if any(g in line for g in _WRITE_GATES):
+                pending = None
+                continue
+            if "require_admin(request)" in line:
+                bad_w.append(pending[1])   # 写接口只挂了管理员闸门 = 给管理员开后门
+                pending = None
+                continue
+        if pending and pending[0] == "read":
+            if any(g in line for g in _READ_GATES):
+                pending = None
+                continue
+            if "require_super" in line:    # 读接口误用超管闸门 ⇒ 管理员看不到
                 bad_r.append(pending[1])
-            pending = None
-            continue
-        if pending and "require_admin(request)" in line:
-            if pending[0] == "write":
-                bad_w.append(pending[1])
-            pending = None
-            continue
+                pending = None
+                continue
     if pending is not None:             # 文件末尾未闭合
         close(pending[0], pending[1])
     return w, r, bad_w, bad_r
@@ -168,7 +187,10 @@ def scan(fname: str):
 w1, r1, bw1, br1 = scan("admin.py")
 ok(f"admin.py：写接口 {w1} 个全部用 require_super", not bw1, str(bw1))
 ok(f"admin.py：只读接口 {r1} 个仍用 require_admin（管理员能看）", not br1, str(br1))
-ok("admin.py 写接口数与改造基线一致（新增写接口请同步本基线）", w1 == 11, w1)
+ok("admin.py 写接口数与改造基线一致（新增写接口请同步本基线）", w1 == 13, w1)
+# 基线 11 → 13（2026-11-03 同步）：2026-11-01 后台改造新增两条写路由
+#   · /api/admin/login           —— 登录入口本身（匿名，见 _PUBLIC_ROUTES）
+#   · /api/admin/config/free-quota —— 免费额度下发（require_super_backend）
 
 w2, r2, bw2, br2 = scan("admin_cookies.py")
 ok(f"admin_cookies.py：写接口 {w2} 个全部有闸门（3 个超管 + 1 个令牌鉴权）",

@@ -436,35 +436,65 @@ def test_panel_ops_on_cloud_rows() -> None:
             cloud_when_local=False)
         check("本机路径下不重复推云", called4["cloud"] == [] and out.get("ok") is True)
 
-        # --- 使用详情：云端行不再报「用户不存在」 ---
-        # （网页版没有使用详情面板，本树无 admin_user_usage / _usage_cloud）
+        # --- 使用详情：网页版**代理授权中心**（2026-11-01 后台补齐后改的口径） ---
+        # 桌面端时代这里是 admin_user_usage + _usage_cloud（本机表兜底 + 云端合并，
+        # 返回 cloud_only / device_fp 这类合并形状）；网页版没有本机账号表，实现改成
+        # 直接 proxy 中心 usage_remote，返回 {"ok":True,"usage":<中心载荷原样>}。
+        # 因此断言改为「透传 + 失败可见」，不再要求桌面端的合并字段 —— 否则守的是
+        # 一个本树已不存在的实现，永远红。
         if not hasattr(admin_router, "admin_user_usage"):
             print("  ⏭ 本树无使用详情端点（网页版无该面板），跳过")
         else:
-            admin_router._usage_cloud = lambda ident: {
+            import license_client
+            _orig_usage = license_client.usage_remote
+            _orig_tok = admin_store._license_admin_token
+            _center = {
                 "ok": True,
-                "data": {"email": ident, "banned": False, "is_admin": False,
-                         "created_at": 800,
-                         "authority": {"member_until_dl": now + 86400 * 3,
-                                       "member_until_ai": 0, "perm_credits": 12,
-                                       "ai_credits_left": 0},
-                         "purchases": [{"plan_code": "download_3day", "at": 700}],
-                         "devices": [{"fp": "fp-1", "name": "Mac", "last_seen": 700}]},
+                "authority": {"member_until_dl": now + 86400 * 3, "member_until_ai": 0,
+                              "perm_credits": 12, "ai_credits_left": 0,
+                              "usage": {"download": 2}},
+                "usage_history": [{"date": "2026-11-02", "counts": {"download": 2}}],
+                "devices": [{"fp": "fp-1", "name": "Mac", "last_seen": 700}],
+                "purchases": [{"plan_code": "download_3day", "created_at": 700}],
             }
-            res = admin_router.admin_user_usage("cloudonly@qq.com", request=None)
+            admin_store._license_admin_token = lambda: "tok-test"
+            license_client.usage_remote = lambda ident, tok, **kw: dict(_center, email=ident)
+            try:
+                res = admin_router.admin_user_usage("cloudonly@qq.com", request=None)
+            finally:
+                license_client.usage_remote = _orig_usage
+                admin_store._license_admin_token = _orig_tok
             u = res.get("usage") or {}
-            check("云端行使用详情返回 ok", res.get("ok") is True
-                  and not res.get("error"))
-            check("云端行使用详情标 cloud_only", u.get("cloud_only") is True)
-            check("云端行使用详情带云端权益（积分 12）",
-                  (u.get("membership") or {}).get("permanent_credits") == 12)
-            check("云端行使用详情带设备指纹", u.get("device_fp") == "fp-1")
-            res2 = admin_router.admin_user_usage("u_1", request=None)
-            check("本机行使用详情仍走本机视图",
-                  (res2.get("usage") or {}).get("cloud_only") is None
-                  and (res2.get("usage") or {}).get("permanent_credits") is None
-                  and (res2.get("usage") or {}).get("membership", {})
-                  .get("permanent_credits") == 7)
+            check("云端行使用详情返回 ok",
+                  res.get("ok") is True and not res.get("error"), str(res)[:120])
+            check("使用详情透传中心权益（永久积分 12）",
+                  (u.get("authority") or {}).get("perm_credits") == 12, str(u)[:120])
+            check("使用详情透传设备指纹",
+                  ((u.get("devices") or [{}])[0] or {}).get("fp") == "fp-1")
+            check("使用详情透传订单",
+                  ((u.get("purchases") or [{}])[0] or {}).get("plan_code") == "download_3day")
+            check("使用详情透传近 14 天用量",
+                  ((u.get("usage_history") or [{}])[0] or {}).get("date") == "2026-11-02")
+
+            # 中心查不到 / 未配令牌：必须 ok=False 且带可读原因，绝不能假装成功
+            admin_store._license_admin_token = lambda: "tok-test"
+            license_client.usage_remote = lambda ident, tok, **kw: {
+                "ok": False, "error": "账号不存在"}
+            try:
+                bad = admin_router.admin_user_usage("ghost@qq.com", request=None)
+            finally:
+                license_client.usage_remote = _orig_usage
+                admin_store._license_admin_token = _orig_tok
+            check("中心查不到 → ok=False 且带原因",
+                  bad.get("ok") is False and "不存在" in str(bad.get("error")), str(bad)[:120])
+            admin_store._license_admin_token = lambda: ""
+            try:
+                notok = admin_router.admin_user_usage("cloudonly@qq.com", request=None)
+            finally:
+                admin_store._license_admin_token = _orig_tok
+            check("未配管理令牌 → 明确提示而非静默成功",
+                  notok.get("ok") is False
+                  and "TOKEN" in str(notok.get("error")).upper(), str(notok)[:120])
 
         # --- 会员管理：云端为主 + 本机兜底（原事故：只有本机 3 条） ---
         mrows = admin_store.list_memberships()
