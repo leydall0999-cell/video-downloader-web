@@ -11,7 +11,10 @@
   },
   "douyin": {
     "name": "抖音",
-    "urls": [],
+    "urls": [
+      "https://v.douyin.com/QWNZzHLhBLU/",
+      "https://v.douyin.com/N7IJVm46hVM/"
+    ],
     "hosts": [
       "douyin.com",
       "iesdouyin.com"

@@ -69,6 +69,10 @@ _CONTENT_UNAVAILABLE_MARKERS = (
     "不可播放", "稿件不可见", "已删除", "已下架", "设为私有",
     "大会员专享", "仅限特定地区", "粉丝可见",
 )
+# 平台级风控拦截（≠ 样本失效）：解析失败但样本链接本身没死，是平台整体被拦
+# （如抖音 Argus 安全插件，hint 自带「风控」字样）。此类失败样本按存活计，
+# 使全挂时正确判 broken → 触发自动修复层 → 根因归类 anti_bot → 落派单。
+_PLATFORM_BLOCK_MARKERS = ("Argus", "风控")
 
 # 复用 server 侧模块（拿遥测/需求聚合），找不到就降级为自读 JSONL。
 for _p in (_HERE, os.path.join(_HERE, "server"), os.path.join(os.path.dirname(_HERE), "server")):
@@ -277,11 +281,16 @@ def main() -> int:
             rec = {"url": u, "ok": ok, "category": cat, "msg": msg,
                    "elapsed_s": round(time.time() - t0, 1)}
             if not ok:
-                rec["sample_alive"] = _sample_alive(u)
-                # 稿件级不可播（删稿/地区/会员）⇒ 这条样本失效，不是平台失效。
-                # 热门榜里混进一条死稿就把整个平台判 degraded，是纯误报（2026-11-01 实测）。
-                if _is_content_unavailable(msg):
-                    rec["content_unavailable"] = True
+                if any(m in (msg or "") for m in _PLATFORM_BLOCK_MARKERS):
+                    # 平台级风控：与样本死活无关，按存活计（否则会被误判 sample_invalid）
+                    rec["sample_alive"] = True
+                    rec["platform_blocked"] = True
+                else:
+                    rec["sample_alive"] = _sample_alive(u)
+                    # 稿件级不可播（删稿/地区/会员）⇒ 这条样本失效，不是平台失效。
+                    # 热门榜里混进一条死稿就把整个平台判 degraded，是纯误报（2026-11-01 实测）。
+                    if _is_content_unavailable(msg):
+                        rec["content_unavailable"] = True
             results.append(rec)
         # 分母只算「可用样本」：稿件不可播的不参与平台健康判定
         usable = [r for r in results if not r.get("content_unavailable")]
