@@ -1076,8 +1076,8 @@
     // network / restricted / unknown 等），让同一个横幅对不同错误给出不同引导，
     // 而不是千篇一律的「解析失败」。
     const cat = String(category || '').trim();
-    const ICON = { cookie_required: '🔑', cookie_invalid_or_expired: '🔑', cdn_forbidden: '🚫', restricted: '🔒', network: '🌐' };
-    const ACCENT = { cookie_required: '#e0a33a', cookie_invalid_or_expired: '#e0a33a', cdn_forbidden: '#e2554f', restricted: '#9aa0a6', network: '#4a90d9' };
+    const ICON = { cookie_required: '🔑', cookie_invalid_or_expired: '🔑', cdn_forbidden: '🚫', restricted: '🔒', network: '🌐', douyin_desktop_only: '💻' };
+    const ACCENT = { cookie_required: '#e0a33a', cookie_invalid_or_expired: '#e0a33a', cdn_forbidden: '#e2554f', restricted: '#9aa0a6', network: '#4a90d9', douyin_desktop_only: '#4a90d9' };
     // 先重置上一次的分类样式，避免串台
     el.alert.className = 'alert';
     el.alert.style.borderLeftColor = '';
@@ -1101,6 +1101,13 @@
             try { el.cookieInput.focus(); el.cookieInput.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
           }
         };
+      } else if (cat === 'douyin_desktop_only') {
+        // 抖音网页版是**确定性地**过不去（服务器拿不到与登录态同源的设备指纹），
+        // 给一个可点的一步到位入口，别让用户对着「请稍后重试」反复试。
+        el.alertAction.textContent = '去下载桌面版';
+        el.alertAction.hidden = false;
+        el.alertAction.style.cssText = 'margin-top:.5rem;padding:.35rem .7rem;border:none;border-radius:6px;background:#4a90d9;color:#fff;font-size:12px;font-weight:600;cursor:pointer;';
+        el.alertAction.onclick = () => { window.location.href = '/download'; };
       } else {
         el.alertAction.hidden = true;
         el.alertAction.onclick = null;

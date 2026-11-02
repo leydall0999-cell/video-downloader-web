@@ -2234,6 +2234,11 @@ _DOUYIN_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+# 🔴 2026-11-03：网页版抖音 = 停用 → 明确引导到桌面版（见 _douyin_info 文档）。
+# worker 侧的破 Argus 尝试（纯 HTTP 直连 / Playwright 注入登录态）在服务器上
+# 都是确定性失败：前者卡 Uifid Not Found，后者页面只剩空壳 streams=0。
+# 留着这条开关：将来若 worker 能破，改 True 即恢复，不用改逻辑。
+_DOUYIN_WEB_VIA_WORKER = False
 
 
 def _is_douyin_host(host: str) -> bool:
@@ -2481,11 +2486,34 @@ def probe_playlist(url: str) -> dict[str, Any]:
 def _douyin_info(url: str) -> dict[str, Any]:
     """调 VPS worker 拿抖音真实流，构造成 yt-dlp 兼容的 info dict。
 
+    🔴🔴 2026-11-03：web 端抖音**已改为明确引导到桌面端**，不再往 worker 里送。
+       原因不是"链接有错"，而是抖音 Argus 风控有两层，服务器侧两层都过不去：
+         · 第一层「没登录态」→ 云端 Cookie 池或许能补；
+         · 第二层「UIFID 设备指纹」→ 要求设备指纹与登录态**同源**，而服务器上
+           无论是纯 HTTP（游客 a_bogus）还是 Playwright（无头/有头 + 登录态注入）
+           跑出来的指纹都不是那台"登录过的设备"，表现为 Uifid Not Found / 空页。
+       桌面端能过是因为它真跑在用户自己的电脑上：本机浏览器 + 本机登录态，
+       指纹天然一致（见 server/douyin_cdp.py）。
+       所以这里直接给可执行的替代方案（下载桌面版、粘贴同一条链接、公开视频免登录），
+       而不是让用户对着「请稍后重试」反复重试 —— 重试一万次也是同一个结果。
+
+    保留 worker 分支代码：万一将来 worker 侧破防（或抖音放开），把
+    `_DOUYIN_WEB_VIA_WORKER` 打开即可，无需重写这里。
+
     抖音 PC 网页两种流形态（2026-08-23 无声问题根因）：
     - 混合轨（v{id}-web.douyinvod.com 带音轨 mp4）→ 单直链下载（HttpFD，最稳）
     - 分离轨（media-video-avc1 纯视频 + media-audio 音频）→ formats + requested_formats
       让 yt-dlp 走 FFmpegFD 双轨合并分支；各自带 Referer（抖音 CDN 校验，缺则 403）。
     """
+    if not _DOUYIN_WEB_VIA_WORKER:
+        raise ResolveError(
+            "抖音请在桌面版解析",
+            "抖音启用了设备指纹风控（Argus），网页版跑在服务器上、拿不到"
+            "「和登录态同源的设备指纹」，怎么试都只会失败——这跟你的链接没关系。"
+            "请用桌面版「视频工坊」：官网 hanyuxz.top 下载，装好后把同一条链接粘进去即可，"
+            "公开视频不需要登录，解析完直接下载。",
+            category="douyin_desktop_only",
+        )
     data = _call_vps_worker("douyin", url)
     headers = {"Referer": "https://www.douyin.com/", "User-Agent": _DOUYIN_UA}
     video_url = data.get("video_url") or ""
