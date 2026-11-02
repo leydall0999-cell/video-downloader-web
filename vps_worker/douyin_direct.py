@@ -324,14 +324,28 @@ def _scan_audio_urls(obj, out):
                 out.append(obj)
 
 
-def resolve(url: str, timeout: int = 15) -> dict:
-    """a_bogus 直连解析。返回与 douyin_resolve.resolve() 同构的 dict。"""
+def resolve(url: str, timeout: int = 15, cookie_header: str | None = None) -> dict:
+    """a_bogus 直连解析。返回与 douyin_resolve.resolve() 同构的 dict。
+
+    cookie_header：可选登录态 Cookie（来自云端公共池的有效抖音登录态）。
+        提供时优先用它（含 sessionid/sid_tt/UIFID 等），跳过游客 ttwid 注册，
+        用于突破抖音 Argus 风控（游客态被确定性拦截）。缺失/为空则走原有游客态。
+    """
     aweme_id = normalize_url(url)
     if not aweme_id:
         raise RuntimeError("无法从链接提取视频 ID：%s" % url[:100])
 
-    ttwid = _ttwid(timeout)
-    ms_token = _ms_token()
+    if cookie_header:
+        # 登录态：直接用，跳过游客 ttwid 注册；msToken 优先取 Cookie 内的值（与签名一致）
+        ms_token = _ms_token()
+        m = re.search(r"msToken=([^;]+)", cookie_header)
+        if m:
+            ms_token = m.group(1)
+        cookie_str = cookie_header
+    else:
+        ttwid = _ttwid(timeout)
+        ms_token = _ms_token()
+        cookie_str = "ttwid=%s; msToken=%s" % (ttwid, ms_token)
     params = (
         "device_platform=webapp&aid=6383&channel=channel_pc_web&aweme_id=%s"
         "&version_code=170400&version_name=17.4.0&cookie_enabled=true"
@@ -348,7 +362,7 @@ def resolve(url: str, timeout: int = 15) -> dict:
         "User-Agent": UA,
         "Referer": "https://www.douyin.com/",
         "Accept": "application/json, text/plain, */*",
-        "Cookie": "ttwid=%s; msToken=%s" % (ttwid, ms_token),
+        "Cookie": cookie_str,
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

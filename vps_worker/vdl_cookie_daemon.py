@@ -30,8 +30,77 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 import logging
+import atexit
 
 logger = logging.getLogger("vdl-daemon")
+
+# ── 2026-10-10 补日志捕获 ────────────────────────────────────────────────
+# 背景：vdl-cookie 历史重启 12846 次，但风暴期查不到任何应用级 traceback。
+# 实测三条原因：
+#   ① 早期 unit 没有 StandardError=append（现已有，写 /opt/vdl-worker/daemon.log）；
+#   ② 本模块从未 basicConfig —— logger 走 logging.lastResort，只放行 WARNING+，
+#      INFO/DEBUG 全被丢弃，所以日志常年只有 3 行；
+#   ③ 未捕获异常只在 stderr 打一次且无时间戳/线程名，daemon 线程内异常尤其难定位。
+# 这里补：显式 handler 写 stderr（unit 已 append 落盘）+ 两个 excepthook，
+# 保证任何未捕获异常都带完整栈、时间戳、线程名落盘。
+if not logger.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
+def _pool_douyin_cookie() -> str | None:
+    """从云端公共 Cookie 池取最新有效的抖音登录态（明文 header），供抖音解析注入。
+
+    背景：抖音 Argus 风控上线后，游客态被确定性拦截。池里已有用户经浏览器扩展/手动
+    贡献的有效抖音登录态（profile_self 真探针验证 status_code=0），但抖音解析（本 daemon）
+    此前从没读取这个池——这是「自动获取 Cookie 能力」与抖音解析之间的断点。
+    本函数补齐：优先消费池里有效登录态，登录态无效/缺失时返回 None，由调用方回落游客态。
+
+    池目录与 vdl-web 同机同路径（~/.videodownloader/cookie_pool，无 ENC_KEY 时明文存储），
+    此处直接读文件（零跨模块耦合）；仅取 30 天内、含 sessionid 的最新一条。
+    """
+    try:
+        pool_dir = os.environ.get("VDL_COOKIE_POOL_DIR") or os.path.join(
+            os.path.expanduser("~"), ".videodownloader", "cookie_pool")
+        f = os.path.join(pool_dir, "douyin.com.json")
+        if not os.path.isfile(f):
+            return None
+        with open(f, encoding="utf-8") as fh:
+            data = json.load(fh)
+        entries = data.get("cookies", []) if isinstance(data, dict) else []
+        now = time.time()
+        for c in sorted(entries, key=lambda x: x.get("ts", 0), reverse=True):
+            if now - c.get("ts", 0) > 30 * 86400:
+                continue
+            h = c.get("header") or c.get("header_enc") or ""
+            if h and "sessionid=" in h:
+                return h
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[cookie-pool] 读抖音登录态失败: %s", str(e)[:120])
+    return None
+
+
+def _vdl_excepthook(exc_type, exc, tb):
+    logger.critical("未捕获异常，进程即将退出", exc_info=(exc_type, exc, tb))
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _vdl_thread_excepthook(args):
+    logger.critical(
+        "线程 %s 抛出未捕获异常，该线程退出（主进程仍在运行，功能可能已半残）"
+        % getattr(getattr(args, "thread", None), "name", "?"),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+sys.excepthook = _vdl_excepthook
+threading.excepthook = _vdl_thread_excepthook
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bilibili_ecs_cookie import push_once, _collect_cookies, _push_to_cloud  # noqa: E402
@@ -52,6 +121,8 @@ from cc_resolve import resolve as cc_resolve  # noqa: E402
 from weishi_resolve import resolve as weishi_resolve  # noqa: E402
 from finder_resolve import resolve as finder_resolve  # noqa: E402
 from xiaohongshu_resolve import resolve as xiaohongshu_resolve  # noqa: E402
+from lespark_resolve import resolve as lespark_resolve  # noqa: E402
+from liblib_resolve import resolve as liblib_resolve  # noqa: E402
 
 
 def _load_env_file(path: str) -> None:
@@ -120,6 +191,8 @@ _RESOLVERS = {
     "weishi": weishi_resolve,
     "finder": finder_resolve,
     "xiaohongshu": xiaohongshu_resolve,
+    "lespark": lespark_resolve,
+    "liblib": liblib_resolve,
 }
 
 
@@ -302,7 +375,11 @@ def do_resolve(platform, url, cookie=""):
     # 非视频页时才回落 Playwright 浏览器方案，快路失败对用户透明。
     if platform == "douyin":
         try:
-            return True, douyin_direct.resolve(url)
+            # 优先用云端池里的有效抖音登录态（突破 Argus 第一层：登录态缺失）；
+            # 缺失/失效时传 None，回落游客态（原行为）。注意 Argus 还有第二层 UIFID
+            # 设备指纹校验，仅靠登录态不足以完全突破，详见运维记录。
+            cookie = _pool_douyin_cookie()
+            return True, douyin_direct.resolve(url, cookie_header=cookie)
         except (douyin_direct.VideoNotFoundError, douyin_direct.ArgusBlockedError) as e:
             # 确定性结论（视频不存在 / Argus 风控拦截）：回落浏览器也是同样结果
             return False, str(e)
@@ -453,14 +530,20 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    t = threading.Thread(target=_loop, daemon=True)
+    t = threading.Thread(target=_loop, daemon=True, name="cookie-loop")
     t.start()
     # profile 缓存清理（12h 周期）：防持久 profile 的 Chromium 缓存无限膨胀撑爆 VPS 磁盘
-    tp = threading.Thread(target=_prune_loop, daemon=True)
+    tp = threading.Thread(target=_prune_loop, daemon=True, name="prune-loop")
     tp.start()
     srv = ThreadingHTTPServer(("0.0.0.0", API_PORT), _Handler)
     print(f"✅ cookie daemon up: loop={INTERVAL}s api=0.0.0.0:{API_PORT}", flush=True)
-    srv.serve_forever()
+    logger.info("cookie daemon 启动: loop=%ss api=0.0.0.0:%s pid=%s", INTERVAL, API_PORT, os.getpid())
+    atexit.register(lambda: logger.info("cookie daemon 正常退出 pid=%s", os.getpid()))
+    try:
+        srv.serve_forever()
+    except BaseException:
+        logger.critical("HTTP 服务循环异常终止", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
