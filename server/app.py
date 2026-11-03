@@ -3764,6 +3764,10 @@ app.include_router(_cloud_drive_rtr.router)
 # 网页访客统计（PV/UV/事件/来源，仅落哈希不落 IP 明文；上架/变现决策的数据依据）
 from routers import webstats as _webstats_rtr
 app.include_router(_webstats_rtr.router)
+# 桌面端（Mac/Win App）解析遥测回写（2026-11-03 第 3 步）：App 解析成功/失败
+# 异步 POST 到这里，写与网页版同源的 ECS 本机日志，巡检零改动即可消费主力端。
+from routers import telemetry as _telemetry_rtr
+app.include_router(_telemetry_rtr.router)
 # 用户信息类数据云备份 · 网页版通道（2026-10-17）：网页版也能把偏好 + 浏览器登录态
 # 随账号备份/恢复。分文件存（scope="web"），与桌面端那份互不覆盖；加解密全在
 # 浏览器端做（WebCrypto），本服务只转发密文。
