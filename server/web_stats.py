@@ -34,6 +34,7 @@ _default_now: Callable[[], float] = time.time
 KEEP_DAYS = 90          # 滚动保留天数
 _MAX_UV_PER_DAY = 5000  # 单日 UV 哈希上限（防刷爆文件）
 _MAX_HOSTS = 20         # 单日来源/设备维度保留的 key 数
+_MAX_FAIL_SITES = 20    # 单日「解析失败」按站点保留的 key 数
 
 # 事件白名单：不在表内的一律丢弃，避免被任意 key 塞爆。
 EVENTS = (
@@ -151,8 +152,14 @@ def _trim(d: dict, limit: int) -> dict:
 
 def record(kind: str, *, ip: str = "", ua: str = "", ref: str = "",
            own_host: str = "", now: Optional[float] = None,
-           path: Optional[Path] = None) -> bool:
+           path: Optional[Path] = None, site: str = "", err: str = "") -> bool:
     """记录一次网页事件。线程安全；返回是否真的落库（白名单外/超限返回 False）。
+
+    ``site`` / ``err`` 只对 ``resolve_fail`` 有意义（2026-11-03 补）：
+    原来失败只有一个计数，运维页显示「解析失败 5」却查不到是哪个站、什么原因
+    ——需求榜只收「未收录新站/缺提取器」两类，其余失败（链接不合法 / Cookie /
+    会员墙 / 超时）完全不落痕，看上去就像数据丢了。这里按「站点×失败原因」
+    落一份明细，只存 host 与原因短标签，不存 URL、不存 IP。
 
     任何异常一律静默——埋点绝不能影响业务主流程。
     """
@@ -160,6 +167,8 @@ def record(kind: str, *, ip: str = "", ua: str = "", ref: str = "",
         kind = (kind or "").strip()
         if kind not in EVENTS:
             return False
+        site = (site or "").strip().lower()[:64]
+        err = (err or "").strip()[:40]
         p = path or default_path()
         ts = _default_now() if now is None else float(now)
         day = _day_of(ts)
@@ -186,6 +195,24 @@ def record(kind: str, *, ip: str = "", ua: str = "", ref: str = "",
                     uv[digest] = 1
             ev = d.setdefault("events", {})
             ev[kind] = int(ev.get(kind, 0)) + 1
+            if kind == "resolve_fail":
+                # 站点×原因明细：host 缺省（链接连主机名都没有）归到「(无法识别)」，
+                # 这样「失败了 1 次」永远有一条可读的原因，而不是一个孤零零的数字。
+                fails = d.setdefault("fails", {})
+                key = site or "(无法识别)"
+                cur = fails.get(key)
+                if isinstance(cur, dict):
+                    cur["n"] = int(cur.get("n", 0)) + 1
+                    cur["last"] = int(ts)
+                    if err:
+                        cur["err"] = err
+                else:
+                    fails[key] = {"n": 1, "last": int(ts), "err": err}
+                if len(fails) > _MAX_FAIL_SITES:
+                    d["fails"] = dict(sorted(
+                        fails.items(),
+                        key=lambda kv: int((kv[1] or {}).get("n", 0)),
+                        reverse=True)[:_MAX_FAIL_SITES])
             d["refs"] = _trim(d.get("refs", {}), _MAX_HOSTS)
             d["devices"] = _trim(d.get("devices", {}), 8)
             st["updated_at"] = ts
@@ -214,6 +241,11 @@ def summary(days: int = 7, *, now: Optional[float] = None,
             d = store.get(day, {})
             events = {k: int(v) for k, v in (d.get("events") or {}).items()}
             refs = d.get("refs") or {}
+            fails = [{"host": k, "n": int((v or {}).get("n", 0)),
+                      "last": int((v or {}).get("last", 0)),
+                      "err": str((v or {}).get("err") or "")}
+                     for k, v in (d.get("fails") or {}).items() if isinstance(v, dict)]
+            fails.sort(key=lambda r: (-r["n"], -r["last"]))
             seq.append({
                 "date": day,
                 "pv": int(d.get("pv", 0)),
@@ -222,18 +254,29 @@ def summary(days: int = 7, *, now: Optional[float] = None,
                 "top_refs": sorted(((k, int(v)) for k, v in refs.items()),
                                    key=lambda kv: kv[1], reverse=True)[:5],
                 "devices": {k: int(v) for k, v in (d.get("devices") or {}).items()},
+                "fails": fails[:10],
             })
     totals: dict[str, int] = {"pv": 0, "uv": 0}
     ev_total: dict[str, int] = {}
+    fail_agg: dict[str, dict] = {}
     for d in seq:
         totals["pv"] += d["pv"]
         totals["uv"] += d["uv"]
         for k, v in d["events"].items():
             ev_total[k] = ev_total.get(k, 0) + v
+        for r in d["fails"]:
+            agg = fail_agg.setdefault(r["host"], {"host": r["host"], "n": 0, "last": 0, "err": ""})
+            agg["n"] += r["n"]
+            if r["last"] >= agg["last"]:
+                agg["last"] = r["last"]
+                if r["err"]:
+                    agg["err"] = r["err"]
     totals.update(ev_total)
+    fail_sites = sorted(fail_agg.values(), key=lambda r: (-r["n"], -r["last"]))[:12]
     return {
         "days": seq,
         "totals": totals,
+        "fail_sites": fail_sites,
         "uv_note": "uv 为各天独立去重之和（按天派生哈希，跨天不可关联），口径=人次",
         "keep_days": KEEP_DAYS,
         "updated_at": st["updated_at"],

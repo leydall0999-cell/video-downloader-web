@@ -164,13 +164,13 @@
   /** 网页访客统计埋点（2026-10-01）：极轻量上报，失败一律静默，绝不阻塞主流程。
    *  服务端只落哈希、不落 IP 明文；用途是回答「网页版有没有流量、从哪来、在哪一步转化」，
    *  作为广告 / CPS / 会员投入的决策依据。kind 必须在服务端白名单内，否则被丢弃。 */
-  const track = (kind) => {
+  const track = (kind, extra) => {
     try {
       if (location.protocol === 'file:') return;   // 本地直接打开不算网页访客
       fetch('/api/webstats/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind, ref: document.referrer || '' }),
+        body: JSON.stringify(Object.assign({ kind, ref: document.referrer || '' }, extra || {})),
         keepalive: true,
       }).catch(() => {});
     } catch (_) { /* 埋点失败绝不影响主流程 */ }
@@ -4805,7 +4805,12 @@
       }
     } catch (error) {
       resolved = null;
-      track('resolve_fail');
+      // 失败也要留下「哪个站 + 什么类别」（2026-11-03）：只落计数的话，运维页
+      // 显示「解析失败 N」却查不到是哪个站，看着就像数据丢了。host 解析不出来
+      // （连链接都不成形）就留空，服务端会归到「(无法识别)」。
+      let failSite = '';
+      try { failSite = new URL(String(url)).hostname.replace(/^www\./, ''); } catch (_e) { failSite = ''; }
+      track('resolve_fail', { site: failSite, err: (error && error.category) || '' });
       showError(error.message || '解析失败', error.hint, '', error.category);
     } finally {
       setLoading(false);

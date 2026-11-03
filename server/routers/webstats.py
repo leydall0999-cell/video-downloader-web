@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Body, Query, Request
+from urllib.parse import urlsplit
 
 import web_stats
 from routers.admin import require_admin
@@ -67,6 +68,28 @@ def _client_ip(request: Request = None) -> str:
     return ((request.client.host if request.client else "") or "")[:64]
 
 
+def _site_of(raw: Any) -> str:
+    """把前端传来的站点（可能是裸 host 或完整 URL）归一成 host，认不出就返回空串。
+
+    解析失败明细只存 host：既能回答「是哪个站」，又不落用户具体看了哪条视频
+    （URL 里常带私密 ID / 分享者身份 / 签名 token），与 web_stats 的隐私口径一致。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if "://" in s:
+        try:
+            s = urlsplit(s).hostname or ""
+        except ValueError:
+            return ""
+    s = s.split("/")[0].split("?")[0].split("#")[0].strip().lower()
+    if s.startswith("www."):
+        s = s[4:]
+    if not s or "." not in s or any(c in s for c in " \t\r\n"):
+        return ""
+    return s[:64]
+
+
 @router.post("/api/webstats/track")
 def track(payload: dict = Body(default=None), request: Request = None) -> dict:
     """前端埋点上报。任何异常一律吞掉并返回 ok:false，绝不抛 5xx。"""
@@ -74,6 +97,9 @@ def track(payload: dict = Body(default=None), request: Request = None) -> dict:
         body = payload if isinstance(payload, dict) else {}
         kind = str(body.get("kind") or "")[:_KIND_MAXLEN]
         ref = str(body.get("ref") or "")[:_REF_MAXLEN]
+        # 解析失败明细（2026-11-03）：site=哪个站，err=失败类别短标签（如 unknown/403）。
+        site = _site_of(body.get("site")) if kind == "resolve_fail" else ""
+        err = str(body.get("err") or "").strip()[:40] if kind == "resolve_fail" else ""
         ip = _client_ip(request)
         if not _throttle_ok(ip, time.time()):
             return {"ok": False, "dropped": "throttled"}
@@ -81,7 +107,7 @@ def track(payload: dict = Body(default=None), request: Request = None) -> dict:
         if request is not None:
             own = (request.headers.get("host") or "").split(":")[0].strip().lower()
         ua = (request.headers.get("user-agent") or "") if request is not None else ""
-        ok = web_stats.record(kind, ip=ip, ua=ua, ref=ref, own_host=own)
+        ok = web_stats.record(kind, ip=ip, ua=ua, ref=ref, own_host=own, site=site, err=err)
         return {"ok": bool(ok)}
     except Exception:  # noqa: BLE001
         return {"ok": False, "dropped": "error"}

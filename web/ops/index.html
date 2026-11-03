@@ -204,7 +204,14 @@
     </div>
     <h3 class="sub">外链来源 Top</h3>
     <table><tbody id="wsRefsBody"></tbody></table>
-    <small class="note">数据来源：服务端 web_stats.json（前端埋点）。与左侧 nginx 口径互补——这里只统计真实页面访问与站内转化，且<b>不落 IP 明文</b>；UV 为按天独立去重之和，口径＝人次。</small>
+    <h3 class="sub">解析失败明细（按站点）</h3>
+    <table>
+      <thead><tr><th>站点</th><th>次数</th><th>类别</th><th>最近一次</th></tr></thead>
+      <tbody id="wsFailBody"></tbody>
+    </table>
+    <small class="note">数据来源：服务端 web_stats.json（前端埋点）。与左侧 nginx 口径互补——这里只统计真实页面访问与站内转化，且<b>不落 IP 明文</b>；UV 为按天独立去重之和，口径＝人次。
+    失败明细只留站点与失败类别，不含具体链接；「(无法识别)」＝粘贴的内容连域名都不成形（口令/半截链接），在入口就被拦下。
+    注意它和下面「解析需求榜」口径不同：需求榜只收<b>未收录新站 / 已收录缺提取器</b>两类，Cookie 失效、会员墙、超时、链接不合法这些都只在这里留痕。</small>
   </section>
 
   <section class="panel">
@@ -620,10 +627,18 @@ async function loadWebStats(key){
     const arr = Object.entries(refs).sort((a,b)=>b[1]-a[1]).slice(0,8);
     $('wsRefsBody').innerHTML = arr.map(([h,n])=>`<tr><td class="path">${esc(h)}</td><td>${n}</td></tr>`).join('')
       || '<tr><td colspan="2" class="empty">无</td></tr>';
+    // 解析失败明细（2026-11-03）：只落 host + 类别，让「解析失败 N」这个数字可回溯。
+    const fails = w.fail_sites || [];
+    $('wsFailBody').innerHTML = fails.map((x)=>{
+      const last = x.last ? new Date(x.last * 1000).toLocaleString() : '-';
+      return `<tr><td class="path">${esc(x.host)}</td><td>${x.n}</td>`+
+        `<td>${esc(x.err || '-')}</td><td>${esc(last)}</td></tr>`;
+    }).join('') || '<tr><td colspan="4" class="empty">该范围内没有失败记录（部署本版之前的历史失败只有计数）</td></tr>';
   } catch(err){
     $('wsStats').innerHTML = `<div class="err">加载失败：${esc(err.message)}（该接口需运维密钥或超管身份）</div>`;
     $('wsDaysBody').innerHTML = '<tr><td colspan="7" class="empty">无</td></tr>';
     $('wsRefsBody').innerHTML = '<tr><td colspan="2" class="empty">无</td></tr>';
+    $('wsFailBody').innerHTML = '<tr><td colspan="4" class="empty">无</td></tr>';
   }
 }
 // 解析需求榜：解析失败自动登记的站点热度（随时间范围，按「站点×周」计数，重试不重复计）
