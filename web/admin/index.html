@@ -1935,7 +1935,9 @@
   }
 
   $('reload').addEventListener('click', () => {
-    load().then(() => { refreshActive(); toast('已刷新'); })
+    // 先刷当前页签再拉主体数据：load() 万一抛错（令牌过期等）也不该让当前页签一动不动。
+    refreshActive();
+    load().then(() => toast('已刷新'))
       .catch((e) => toast('加载失败：' + e.message, 3600));
   });
   $('save').addEventListener('click', () => { save().catch((e) => toast('保存失败：' + e.message, 3600)); });
