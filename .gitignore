@@ -58,3 +58,6 @@ cookies/
 
 # 本地测试时按需下载的 AI 模型（208MB 级，绝不入库，部署机按需自取）
 server/models/
+
+# 运行时数据（后台审计日志等，不入库）
+server/data/
