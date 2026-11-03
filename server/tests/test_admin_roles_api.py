@@ -117,6 +117,14 @@ _TOKEN_AUTH_ROUTES = ("/api/cookie/pool-admin",)
 # 否则谁也登不进后台。这是唯一允许「无闸门」的白名单；新增条目必须在此写明理由。
 _PUBLIC_ROUTES = ("/admin/login", "/api/admin/login")
 
+# 「只改操作者自己的查看状态」的写接口：允许 require_admin，但必须由下面
+# _assert_ui_state_only() 逐条证明「真的只动 UI 状态文件」。
+#   /api/admin/platform-health/ack —— 把巡检异常提醒标已读（后台首屏红条的「知道了」）。
+#     管理员是只读**配置**，把红条标已读不涉及任何业务写入；若强制超管，
+#     负责盯盘的管理员就只能一直看着红条、无法处理，属于职责错配。
+#     但它一旦开始写业务数据（套餐/用户/额度），下面的断言必须立刻变红。
+_UI_STATE_ROUTES = ("/api/admin/platform-health/ack",)
+
 # 认可的写闸门写法（2026-11-03 补齐）：三者都**不弱于** require_super。
 #   require_super(request)         —— 桌面 App 后台兼容（普通/后台令牌都收，但必须超管）
 #   require_super_backend(request) —— 只认 2h 后台令牌，比上面更严（改价/改额度专用）
@@ -141,7 +149,7 @@ def scan(fname: str):
     def close(kind, line_no):
         if pending is None:
             return
-        if pending[0] == "write":
+        if pending[0] in ("write", "write_ui"):
             bad_w.append(pending[1])
         else:
             bad_r.append(pending[1])
@@ -156,6 +164,10 @@ def scan(fname: str):
             route = line
             if any(t in route for t in _TOKEN_AUTH_ROUTES + _PUBLIC_ROUTES):
                 pending = None          # 令牌鉴权 / 登录入口，跳过
+            elif is_write and any(t in route for t in _UI_STATE_ROUTES):
+                # 纯 UI 状态写接口：允许降到管理员级，但**仍然必须挂闸门**
+                # （漏挂 = 匿名可改状态，照样记 bad；见 _UI_STATE_ROUTES）
+                pending = ("write_ui", i, route)
             else:
                 pending = ("write", i, route) if is_write else ("read", i, route)
             if is_write:
@@ -163,6 +175,10 @@ def scan(fname: str):
             else:
                 r += 1
             continue
+        if pending and pending[0] == "write_ui":
+            if any(g in line for g in _WRITE_GATES + _READ_GATES):
+                pending = None
+                continue
         if pending and pending[0] == "write":
             if any(g in line for g in _WRITE_GATES):
                 pending = None
@@ -184,13 +200,50 @@ def scan(fname: str):
     return w, r, bad_w, bad_r
 
 
+def handler_body(fname: str, route: str) -> str:
+    """取某个路由装饰器到下一个路由装饰器之间的源码（含 docstring 与函数体）。"""
+    raw = (ROOT / "routers" / fname).read_text(encoding="utf-8")
+    start = raw.find('"' + route + '"')
+    if start < 0:
+        return ""
+    start = raw.rfind("@router.", 0, start)
+    nxt = raw.find("\n@router.", start + 1)
+    return raw[start: nxt if nxt > 0 else len(raw)]
+
+
+# 业务数据关键词：出现在「纯 UI 状态」接口里 ⇒ 它已经越界成业务写入，必须改超管闸门
+_BUSINESS_WRITE_TOKENS = ("users.json", "admin.json", "plans_set", "membership",
+                          "subscription", "quota", "license", "payment")
+
+
+def assert_ui_state_only(fname: str, route: str, expect_file: str) -> list[str]:
+    """证明 _UI_STATE_ROUTES 里的接口只动一个 UI 状态文件，返回违规项。"""
+    body = handler_body(fname, route)
+    bad = []
+    if not body:
+        return [f"找不到路由 {route}（白名单失效，请删掉对应条目）"]
+    if expect_file not in body:
+        bad.append(f"未写 {expect_file}")
+    for tok in _BUSINESS_WRITE_TOKENS:
+        if tok in body:
+            bad.append(f"出现业务写入痕迹 {tok}")
+    return bad
+
+
 w1, r1, bw1, br1 = scan("admin.py")
-ok(f"admin.py：写接口 {w1} 个全部用 require_super", not bw1, str(bw1))
+ok(f"admin.py：写接口 {w1} 个全部有闸门（1 条纯 UI 状态见 _UI_STATE_ROUTES）", not bw1, str(bw1))
 ok(f"admin.py：只读接口 {r1} 个仍用 require_admin（管理员能看）", not br1, str(br1))
-ok("admin.py 写接口数与改造基线一致（新增写接口请同步本基线）", w1 == 13, w1)
+ok("admin.py 写接口数与改造基线一致（新增写接口请同步本基线）", w1 == 14, w1)
 # 基线 11 → 13（2026-11-03 同步）：2026-11-01 后台改造新增两条写路由
 #   · /api/admin/login           —— 登录入口本身（匿名，见 _PUBLIC_ROUTES）
 #   · /api/admin/config/free-quota —— 免费额度下发（require_super_backend）
+# 基线 13 → 14（2026-11-04 同步）：11-03 晚「巡检异常提醒」新增
+#   · /api/admin/platform-health/ack —— 只改提醒文件 ack 标记（require_admin，
+#     见 _UI_STATE_ROUTES；其「不得写业务数据」由 _assert_ui_state_only 钉死）
+
+for _route in _UI_STATE_ROUTES:
+    _bad = assert_ui_state_only("admin.py", _route, "platform_health_alerts.json")
+    ok(f"{_route} 只写 UI 状态文件（不碰业务数据）", not _bad, str(_bad))
 
 w2, r2, bw2, br2 = scan("admin_cookies.py")
 ok(f"admin_cookies.py：写接口 {w2} 个全部有闸门（3 个超管 + 1 个令牌鉴权）",
