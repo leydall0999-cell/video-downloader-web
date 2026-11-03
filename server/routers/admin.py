@@ -600,6 +600,7 @@ def admin_platform_health(days: int = 30, request: Request = None) -> dict[str, 
     # parents[1]/data。两处都探一下，取第一个存在的。
     check = None
     tickets = []
+    alerts = {"unseen": 0, "events": [], "updated_at": ""}
     _here = Path(__file__).resolve()
     for _root in (_here.parents[2], _here.parents[1]):
         _cand = _root / "data" / "platform_health.json"
@@ -607,6 +608,19 @@ def admin_platform_health(days: int = 30, request: Request = None) -> dict[str, 
             if check is None and _cand.is_file():
                 check = _json.loads(_cand.read_text(encoding="utf-8"))
                 check["_file"] = str(_cand)
+        except Exception:  # noqa: BLE001
+            pass
+        # 巡检异常提醒（2026-11-03）：巡检脚本只报「比上一轮变差」的平台，
+        # 落到这个文件里等后台首屏亮红条；未读数由管理员点「知道了」清零。
+        try:
+            if not alerts.get("events"):
+                _al = _root / "data" / "platform_health_alerts.json"
+                if _al.is_file():
+                    _d = _json.loads(_al.read_text(encoding="utf-8"))
+                    if isinstance(_d, dict):
+                        alerts = {"unseen": int(_d.get("unseen") or 0),
+                                  "updated_at": _d.get("updated_at") or "",
+                                  "events": list(_d.get("events") or [])[-20:]}
         except Exception:  # noqa: BLE001
             pass
         # 自动修复的派单（2026-11-01）：只有「升版也修不好」的才进这里，
@@ -621,7 +635,42 @@ def admin_platform_health(days: int = 30, request: Request = None) -> dict[str, 
             pass
     return {"ok": True, "data_dir": str(base), "days": int(days or 30),
             "success": succ, "demand": dem, "check": check,
-            "repair_tickets": tickets}
+            "alerts": alerts, "repair_tickets": tickets}
+
+
+@router.post("/api/admin/platform-health/ack")
+def admin_platform_health_ack(request: Request = None) -> dict[str, Any]:
+    """把「巡检异常提醒」标为已读（后台首屏红条上的「知道了」）。
+
+    只改提醒文件的 ack 标记，不动健康表本身 —— 管理员看过了不等于平台修好了。
+    require_admin：管理员只读的是**配置**，把提醒标已读不涉及任何业务写入。
+    """
+    require_admin(request)
+    import json as _json
+    from pathlib import Path
+
+    _here = Path(__file__).resolve()
+    for _root in (_here.parents[2], _here.parents[1]):
+        p = _root / "data" / "platform_health_alerts.json"
+        if not p.is_file():
+            continue
+        try:
+            d = _json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(d, dict):
+                continue
+            evs = [e for e in (d.get("events") or []) if isinstance(e, dict)]
+            for e in evs:
+                e["ack"] = True
+            d["events"] = evs
+            d["unseen"] = 0
+            d["ack_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(p)
+            return {"ok": True, "acked": len(evs), "file": str(p)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+    return {"ok": True, "acked": 0, "note": "提醒文件不存在"} 
 
 
 @router.get("/api/admin/platform-usage")

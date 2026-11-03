@@ -47,6 +47,12 @@
   body.readonly input, body.readonly select { opacity:.55; cursor:not-allowed; }
   body.readonly button { opacity:.5; cursor:not-allowed; }
   #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; z-index:9; }
+  /* 巡检异常提醒（2026-11-03）：只有「比上一轮变差」才亮，任何页签首屏都看得到 */
+  .alertbar { background:rgba(255,107,107,.10); border:1px solid var(--red); border-radius:12px; padding:12px 16px; display:none; }
+  .alertbar h3 { margin:0 0 8px; font-size:14px; color:var(--red); display:flex; align-items:center; gap:8px; }
+  .alertbar ul { margin:0 0 10px; padding-left:18px; }
+  .alertbar li { font-size:13px; line-height:1.7; }
+  .alertbar .tiny { color:var(--muted); font-size:12px; }
   /* 平台健康 / 派单（2026-11-01）：状态徽章 + KPI + 证据折叠 */
   .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); white-space:nowrap; }
   .chip.bad { color:var(--red); border-color:rgba(255,107,107,.5); background:rgba(255,107,107,.1); }
@@ -112,6 +118,7 @@
 </nav>
 
 <div class="wrap">
+  <div class="alertbar" id="healthAlert"></div>
   <section class="panel" id="gate">
     <h2><span class="dot"></span>后台需要单独登录</h2>
     <p class="note">
@@ -167,7 +174,8 @@
   <section class="panel view" id="healthPanel" data-view="health" style="display:none">
     <h2><span class="dot"></span>平台健康 · 自动修复派单</h2>
     <p class="note">
-      每天 4:30 自动巡检：判出 <b>broken</b>（样本还活着但全部解析失败）会先自动升级 yt-dlp
+      每天 <b>4:30 与 16:30</b> 各巡检一次（11 个平台有真实样本，其余按遥测/需求判定）：
+      判出 <b>broken</b>（样本还活着但全部解析失败）会先自动升级 yt-dlp
       并用独立子进程复测，升版后仍失败才落到下面的派单里 —— 派单 = <b>真的需要人动手</b>的清单。
     </p>
     <div class="kpis" id="healthKpis"></div>
@@ -450,6 +458,9 @@
     degraded: ['warn', '部分可用'],
     repaired_pending_restart: ['good', '已修·待重启'],
     demand_only: ['mute', '仅需求·无成功'],
+    // 已知受限：服务器侧永远解析不了（缺 Cookie/播放签名、只有桌面端能解析），
+    // 不算「坏了」，不进待办、不触发自动升版 —— 否则每天报同一条假警报。
+    limited: ['mute', '已知受限'],
     healthy: ['good', '健康'],
     no_sample: ['mute', '无样本'],
     unknown: ['mute', '未知'],
@@ -568,6 +579,40 @@
       ['平台', '状态', '根因', '建议动作', 'yt-dlp', '派单时间'], rows, '暂无派单');
   }
 
+  // ---------------- 巡检异常提醒（2026-11-03） ----------------
+  // 巡检只报「比上一轮变差」的平台，未读的落在这里，任何页签首屏都看得到。
+  // 修这个的原因：结果只写 ECS 的 json + 日志，没人会主动去翻 ⇒ 巡检等于白跑。
+  function renderAlerts(a) {
+    const box = $('healthAlert');
+    if (!box) return;
+    const evs = ((a && a.events) || []).filter((e) => e && !e.ack);
+    if (!evs.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    const rows = evs.slice(-8).reverse().map((e) => {
+      const chip = STATUS_CHIP[e.to] || ['warn', e.to];
+      return '<li><b>' + esc(e.name || e.platform) + '</b> '
+        + '<span class="chip ' + chip[0] + '">' + esc(chip[1]) + '</span>'
+        + '　上一轮 ' + esc(e.from || '—')
+        + (e.detail ? '<br><span class="tiny">' + esc(e.detail) + '</span>' : '')
+        + '</li>';
+    }).join('');
+    box.innerHTML = '<h3>⚠️ 平台巡检：' + evs.length + ' 个平台比上一轮变差</h3>'
+      + '<ul>' + rows + '</ul>'
+      + '<button class="ghost" id="healthAck">知道了</button>'
+      + ' <span class="tiny">巡检每天 4:30 / 16:30 各跑一次，只报「变差」，恢复后自动不再出现。'
+      + '「已知受限」= 服务器侧本来就解析不了的（缺 Cookie/播放签名、仅桌面端），不算故障。</span>';
+    box.style.display = '';
+    const btn = $('healthAck');
+    if (btn) btn.addEventListener('click', async () => {
+      try {
+        await api('/api/admin/platform-health/ack', { method: 'POST' });
+        box.style.display = 'none';
+        box.innerHTML = '';
+        toast('已标记已读');
+        loadInsights().catch(() => {});
+      } catch (err) { toast('标记失败：' + err.message, 3600); }
+    });
+  }
+
   function renderHealth(d) {
     const check = d.check || null;
     const s = (check && check.summary) || {};
@@ -579,11 +624,17 @@
     kpis += kpi(counts.needs_manual || 0, '需人工');
     kpis += kpi(counts.repaired_pending_restart || 0, '已修待重启');
     kpis += kpi((d.repair_tickets || []).length, '未结派单');
+    // 未读异常 = 巡检发现的「比上一轮变差」，点红条上的「知道了」清零。
+    // 以提醒文件为准（d.alerts 恒有值）；健康表里的 alerts_unseen 是那一轮的快照，
+    // 只当接口没给 alerts 时的兜底 —— 别让过期快照把红条数字顶上去。
+    kpis += kpi(d.alerts ? Number(d.alerts.unseen || 0) : Number(s.alerts_unseen || 0), '未读异常');
+    kpis += kpi(counts.limited || 0, '已知受限');
     $('healthKpis').innerHTML = kpis;
+    renderAlerts(d.alerts);
 
     if (!check) {
       $('healthMeta').textContent =
-        '还没跑过巡检（或健康表不在数据目录里）。巡检由服务器每日 4:30 定时执行，'
+        '还没跑过巡检（或健康表不在数据目录里）。巡检由服务器每日 4:30 / 16:30 定时执行，'
         + '也可以在服务器上手动跑一次。';
     } else {
       const auto = check.autorepair_enabled ? '自动修复：开启' : '自动修复：关闭';

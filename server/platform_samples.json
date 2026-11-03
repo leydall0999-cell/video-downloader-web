@@ -1,5 +1,5 @@
 {
-  "_comment": "平台巡检样本库。urls=固定样本（需真实可播）；discoverer=从公开 API 自动取当前真实视频（推荐，免维护）。urls 为空=待采集，巡检显示 no_sample。样本须真实可播，禁止占位/臆造链接。",
+  "_comment": "平台巡检样本库。urls=固定样本（需真实可播，已逐条实测通过）；discoverer=从公开 API 自动取当前真实视频（推荐，免维护）；n=每个平台巡检取几条样本（缺省 3）；known_limit=已知限制（服务器侧永远解析不了，巡检标 limited 而不是 broken，不触发自动修复、不进待办）。urls 为空=待采集，巡检显示 no_sample。样本须真实可播，禁止占位/臆造链接。",
   "bilibili": {
     "name": "哔哩哔哩",
     "discoverer": "bilibili_popular",
@@ -18,7 +18,8 @@
     "hosts": [
       "douyin.com",
       "iesdouyin.com"
-    ]
+    ],
+    "n": 2
   },
   "kuaishou": {
     "name": "快手",
@@ -40,66 +41,92 @@
   },
   "weibo": {
     "name": "微博",
-    "urls": [],
+    "urls": [
+      "https://weibo.com/tv/show/1034:4797699866951785?from=old_pc_videoshow",
+      "https://video.weibo.com/show?fid=1034:4967272104787984"
+    ],
     "hosts": [
       "weibo.com",
       "weibo.cn",
       "video.weibo.com"
-    ]
+    ],
+    "n": 2
   },
   "xigua": {
     "name": "西瓜视频",
-    "urls": [],
+    "urls": [
+      "https://www.ixigua.com/6996881461559165471"
+    ],
     "hosts": [
       "ixigua.com"
-    ]
+    ],
+    "n": 1,
+    "known_limit": "西瓜与抖音同源，仅桌面端可解析（网页版只给桌面版引导）"
   },
   "acfun": {
     "name": "AcFun",
     "urls": [],
     "hosts": [
       "acfun.cn"
-    ]
+    ],
+    "discoverer": "acfun_rank",
+    "n": 2
   },
   "tencent": {
     "name": "腾讯视频",
-    "urls": [],
+    "urls": [
+      "https://v.qq.com/x/page/q326831cny0.html"
+    ],
     "hosts": [
       "v.qq.com"
-    ]
+    ],
+    "n": 1
   },
   "youku": {
     "name": "优酷",
-    "urls": [],
+    "urls": [
+      "https://v.youku.com/v_show/id_XNTA2NTA0MjA1Mg==.html"
+    ],
     "hosts": [
       "youku.com"
-    ]
+    ],
+    "n": 1,
+    "known_limit": "服务器侧缺播放签名 ckey，只有带用户 Cookie 才能解析（App 端正常）"
   },
   "iqiyi": {
     "name": "爱奇艺",
-    "urls": [],
+    "urls": [
+      "https://www.iqiyi.com/v_19rrojlavg.html"
+    ],
     "hosts": [
       "iqiyi.com",
       "iq.com",
       "iqy.net",
       "qy.net"
-    ]
+    ],
+    "n": 1
   },
   "mgtv": {
     "name": "芒果TV",
-    "urls": [],
+    "urls": [
+      "https://www.mgtv.com/b/427837/15588271.html"
+    ],
     "hosts": [
       "mgtv.com",
       "imgo.tv"
-    ]
+    ],
+    "n": 1
   },
   "sohu": {
     "name": "搜狐视频",
-    "urls": [],
+    "urls": [
+      "https://tv.sohu.com/v/dXMvMjMyNzk5ODg5Lzc4NjkzNDY0LnNodG1s.html"
+    ],
     "hosts": [
       "tv.sohu.com",
       "sohu.com"
-    ]
+    ],
+    "n": 1
   },
   "zhihu": {
     "name": "知乎",
@@ -110,10 +137,13 @@
   },
   "ximalaya": {
     "name": "喜马拉雅",
-    "urls": [],
+    "urls": [
+      "https://www.ximalaya.com/sound/562111701"
+    ],
     "hosts": [
       "ximalaya.com"
-    ]
+    ],
+    "n": 1
   },
   "netease": {
     "name": "网易云音乐",

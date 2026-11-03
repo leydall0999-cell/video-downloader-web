@@ -148,6 +148,27 @@ def _is_content_unavailable(msg: str) -> bool:
     return any(m in low for m in _CONTENT_UNAVAILABLE_MARKERS)
 
 
+def _is_busy(msg: str) -> bool:
+    """解析服务自己忙（同一时刻只跑一个任务），不是平台坏了。
+
+    2026-11-03 实测：连着打两条微博样本，第二条被服务端「上一个解析任务未完成」挡回，
+    整平台就凭空判成 degraded。这类失败必须重试，重试仍忙就不计入分母。
+    """
+    low = msg or ""
+    return any(m in low for m in ("正忙", "未完成", "稍后重试", "busy", "already running"))
+
+
+def _resolve_with_retry(url: str, attempts: int = 3) -> tuple[bool, str, str]:
+    ok, cat, msg = False, "", ""
+    for i in range(max(1, attempts)):
+        ok, cat, msg = _resolve(url)
+        if ok or not _is_busy(msg):
+            return ok, cat, msg
+        if i + 1 < attempts:
+            time.sleep(3)
+    return ok, cat, msg
+
+
 def _sample_alive(url: str) -> bool:
     """样本链接本身是否还活着（区分「样本失效」与「平台失效」）。"""
     status, body = _http(url, timeout=20)
@@ -168,13 +189,44 @@ def _discover_bilibili(n: int) -> list[str]:
             for i in items if i.get("bvid")][:n]
 
 
-_DISCOVERERS = {"bilibili_popular": _discover_bilibili}
+def _discover_acfun(n: int) -> list[str]:
+    """AcFun 公开日榜 API（无需登录）：rankList[].contentId ⇒ https://www.acfun.cn/v/ac{id}。
+
+    2026-11-03 实测：ECS 直连 200，解析同链路可用（1.9s 出结果）。
+    """
+    _, body = _http("https://www.acfun.cn/rest/pc-direct/rank/channel"
+                    "?channelId=0&rankLimit=%d&rankPeriod=DAY" % max(n * 3, 10))
+    try:
+        rows = json.loads(body).get("rankList") or []
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    for r in rows:
+        cid = r.get("contentId") or r.get("id")
+        if cid:
+            out.append("https://www.acfun.cn/v/ac%s" % cid)
+        if len(out) >= n:
+            break
+    return out
+
+
+_DISCOVERERS = {"bilibili_popular": _discover_bilibili,
+                "acfun_rank": _discover_acfun}
 
 
 def _samples_for(cfg: dict, n: int) -> list[str]:
+    """取该平台本次要测的样本。
+
+    `cfg["n"]` 优先于全局缺省：样本成本不一样（爱奇艺一条要 20s+），
+    没有公开榜单可自动发现的平台只留 1 条，免得整轮巡检拖到十几分钟。
+    """
+    n = int(cfg.get("n") or n) or 1
     disc = cfg.get("discoverer")
     if disc and disc in _DISCOVERERS:
-        got = _DISCOVERERS[disc](n)
+        try:
+            got = _DISCOVERERS[disc](n)
+        except Exception:  # noqa: BLE001 — 发现器挂了就退回固定样本，不能让整轮巡检失败
+            got = []
         if got:
             return got
     return list(cfg.get("urls") or [])[:n]
@@ -239,6 +291,110 @@ def _evidence_for(domains: list[str], succ: dict, dem: dict) -> dict:
     }
 
 
+# ---------------- 异常提醒（2026-11-03） ----------------
+# 巡检结果只写进 ECS 的 JSON + 日志，没人会主动去翻 ⇒ 等于没巡检。
+# 这里只做两件事：① **比上一轮更差才提醒**（防刷屏）；② 提醒落到后台首屏（红条），
+# 可选再往群里发一条（VDL_HEALTH_WEBHOOK）。
+_ALERT_PATH = os.environ.get(
+    "VDL_HEALTH_ALERT_OUT",
+    os.path.join(os.path.dirname(OUT_PATH), "platform_health_alerts.json"))
+# 严重度：数字变大 = 变差。提醒只在「跨过 _ALERT_MIN_SEV 且变差」时产生。
+_SEV = {"healthy": 0, "no_sample": 0, "unknown": 0,
+        "limited": 1, "demand_only": 2,
+        "degraded": 3, "sample_invalid": 3, "needs_manual": 3,
+        "repaired_pending_restart": 3, "broken": 4}
+_ALERT_MIN_SEV = 3
+_MAX_ALERT_EVENTS = 100
+
+
+def _load_prev_status() -> dict:
+    """上一轮健康表里每个平台的状态（文件不存在=首次跑，返回空）。"""
+    try:
+        with open(OUT_PATH, "r", encoding="utf-8") as f:
+            prev = json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+    return {it.get("platform"): it.get("status")
+            for it in (prev.get("items") or [])
+            if isinstance(it, dict) and it.get("platform")}
+
+
+def _first_fail(it: dict) -> str:
+    for r in it.get("results") or []:
+        if not r.get("ok"):
+            return str(r.get("msg") or "")[:160]
+    return ""
+
+
+def _diff_alerts(items: list, prev: dict) -> list:
+    """挑出「这轮比上轮更差」的平台。首轮/新平台不报，避免一次刷出一堆假警报。"""
+    out = []
+    for it in items:
+        cur, old = it.get("status"), prev.get(it.get("platform"))
+        if not old:
+            continue
+        if _SEV.get(cur, 0) >= _ALERT_MIN_SEV and _SEV.get(cur, 0) > _SEV.get(old, 0):
+            out.append({"ts": int(time.time()), "platform": it["platform"],
+                        "name": it.get("name") or it["platform"],
+                        "from": old, "to": cur,
+                        "detail": (it.get("detail") or _first_fail(it))[:160],
+                        "ack": False})
+    return out
+
+
+def _save_alerts(new_events: list) -> dict:
+    """把本轮新增异常并入提醒文件（未读的留着，直到有人在后台点「知道了」）。"""
+    doc: dict = {"updated_at": "", "events": []}
+    try:
+        with open(_ALERT_PATH, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            doc = loaded
+    except Exception:  # noqa: BLE001
+        pass
+    events = [e for e in (doc.get("events") or []) if isinstance(e, dict)]
+    # 一天可能跑多次：同一平台同一条异常不重复堆叠
+    seen = {(e.get("platform"), e.get("to")) for e in events if not e.get("ack")}
+    for e in new_events:
+        if (e["platform"], e["to"]) in seen:
+            continue
+        events.append(e)
+    events = events[-_MAX_ALERT_EVENTS:]
+    unread = [e for e in events if not e.get("ack")]
+    doc = {"updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "unseen": len(unread), "events": events,
+           "last_run_changes": new_events}
+    try:
+        os.makedirs(os.path.dirname(_ALERT_PATH), exist_ok=True)
+        tmp = _ALERT_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _ALERT_PATH)
+    except Exception as e:  # noqa: BLE001
+        print("提醒写入失败: %s" % e)
+    return doc
+
+
+def _notify(msg: str) -> None:
+    """可选推送。企业微信/钉钉群机器人同样是 {"msgtype":"text","text":{"content"}}，
+    所以缺省用这个体；Bark 用 VDL_HEALTH_WEBHOOK_KIND=bark（GET /标题/内容）。"""
+    url = (os.environ.get("VDL_HEALTH_WEBHOOK") or "").strip()
+    if not url:
+        return
+    kind = (os.environ.get("VDL_HEALTH_WEBHOOK_KIND") or "wecom").strip().lower()
+    try:
+        if kind == "bark":
+            from urllib.parse import quote
+            _http("%s/%s/%s" % (url.rstrip("/"), quote("视频工坊·巡检异常"),
+                                quote(msg)), timeout=10)
+        else:
+            _http(url, timeout=10, data=json.dumps(
+                {"msgtype": "text", "text": {"content": msg}},
+                ensure_ascii=False).encode())
+    except Exception as e:  # noqa: BLE001
+        print("提醒推送失败: %s" % e)
+
+
 def main() -> int:
     try:
         with open(SAMPLES_PATH, "r", encoding="utf-8") as f:
@@ -277,10 +433,13 @@ def main() -> int:
         results = []
         for u in urls:
             t0 = time.time()
-            ok, cat, msg = _resolve(u)
+            ok, cat, msg = _resolve_with_retry(u)
             rec = {"url": u, "ok": ok, "category": cat, "msg": msg,
                    "elapsed_s": round(time.time() - t0, 1)}
-            if not ok:
+            if not ok and _is_busy(msg):
+                # 服务自己忙，跟平台无关：重试过仍忙的样本不计入分母
+                rec["busy"] = True
+            elif not ok:
                 if any(m in (msg or "") for m in _PLATFORM_BLOCK_MARKERS):
                     # 平台级风控：与样本死活无关，按存活计（否则会被误判 sample_invalid）
                     rec["sample_alive"] = True
@@ -292,11 +451,17 @@ def main() -> int:
                     if _is_content_unavailable(msg):
                         rec["content_unavailable"] = True
             results.append(rec)
-        # 分母只算「可用样本」：稿件不可播的不参与平台健康判定
-        usable = [r for r in results if not r.get("content_unavailable")]
+        # 分母只算「可用样本」：稿件不可播的、服务忙没测出结果的都不参与判定
+        usable = [r for r in results
+                  if not r.get("content_unavailable") and not r.get("busy")]
         ok_n = sum(1 for r in usable if r["ok"])
         alive_n = sum(1 for r in usable if r.get("sample_alive", True))
-        if not usable:
+        detail = ""
+        if not usable and any(r.get("busy") for r in results):
+            # 全都卡在「服务正忙」：没有结论，就别硬判 sample_invalid（那是维护问题的结论）
+            status = "unknown"
+            detail = "解析服务当时正忙，本轮没测出结论"
+        elif not usable:
             status = "sample_invalid"
         elif ok_n == len(usable):
             status = "healthy"
@@ -306,9 +471,16 @@ def main() -> int:
             status = "sample_invalid"
         else:
             status = "broken"
+        known_limit = (cfg.get("known_limit") or "").strip()
+        if known_limit and ok_n == 0:
+            # 已知限制（服务器侧缺 Cookie/播放签名、只有桌面端能解析）：
+            # 它**不是**「平台坏了」，也不能进待办和自动修复 —— 否则每天报同一条
+            # 假警报，把真正需要处理的平台淹掉。样本通了立即回到 normal 判定。
+            status = "limited"
+            detail = known_limit
         items.append({"platform": key, "name": cfg.get("name", key), "status": status,
                       "source": "sample", "ok": ok_n, "total": len(usable),
-                      "evidence": ev, "results": results})
+                      "evidence": ev, "results": results, "detail": detail})
 
     # ---- 自动修复层（2026-11-01）----
     # 只对 broken 触发：degraded 实测多为**内容级**限制（如 B站某视频 412 地区/会员），
@@ -352,8 +524,8 @@ def main() -> int:
     # 排序：**需要行动的排前面**，无证据（=无真实流量）的沉底。
     # 不排序的话，unknown 会淹没真正坏掉的平台——健康表的价值在于「先看什么」。
     _RANK = {"broken": 0, "needs_manual": 1, "sample_invalid": 2, "degraded": 3,
-             "repaired_pending_restart": 4, "demand_only": 5, "healthy": 6,
-             "no_sample": 7, "unknown": 8}
+             "repaired_pending_restart": 4, "demand_only": 5, "limited": 6,
+             "healthy": 7, "no_sample": 8, "unknown": 9}
     items.sort(key=lambda r: (_RANK.get(r["status"], 9), r["platform"]))
     counts: dict[str, int] = {}
     for it in items:
@@ -361,6 +533,11 @@ def main() -> int:
     actionable = sum(counts.get(s, 0) for s in
                      ("broken", "needs_manual", "sample_invalid", "degraded",
                       "repaired_pending_restart", "demand_only"))
+
+    # 提醒：与上一轮比，只报「变差」的那几个（首次跑不报，否则一次刷一堆）
+    prev_status = _load_prev_status()
+    new_events = _diff_alerts(items, prev_status)
+    alert_doc = _save_alerts(new_events)
     out = {"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
            "endpoint": ENDPOINT, "telemetry_days": TELEMETRY_DAYS,
            "demand_days": DEMAND_DAYS, "data_dir": DATA_DIR,
@@ -369,6 +546,8 @@ def main() -> int:
            "summary": {"total": len(items), "actionable": actionable,
                        "counts": counts,
                        "no_evidence": counts.get("unknown", 0),
+                       "limited": counts.get("limited", 0),
+                       "alerts_unseen": int(alert_doc.get("unseen") or 0),
                        "repaired_pending_restart": counts.get(
                            "repaired_pending_restart", 0),
                        "needs_manual": counts.get("needs_manual", 0)},
@@ -410,8 +589,22 @@ def main() -> int:
                  (s.get("counts") or {}).items(),
                  key=lambda kv: kv[0]) if k in
                  ("broken", "needs_manual", "sample_invalid", "degraded",
-                  "repaired_pending_restart", "demand_only")) or "无",
+                  "repaired_pending_restart", "demand_only", "limited")) or "无",
              s.get("no_evidence", 0)))
+    if new_events:
+        print("⚠️  新增异常 %d 个（后台「平台健康」首屏会亮红条）：" % len(new_events))
+        for e in new_events:
+            print("      %s %s → %s  %s"
+                  % (e["name"], e["from"], e["to"], (e.get("detail") or "")[:80]))
+        _notify("【视频工坊·平台巡检】%s 新增异常 %d 个\n%s"
+                % (time.strftime("%m-%d %H:%M"), len(new_events),
+                   "\n".join("- %s %s→%s %s"
+                             % (e["name"], e["from"], e["to"],
+                                (e.get("detail") or "")[:60])
+                             for e in new_events[:8])))
+    elif alert_doc.get("unseen"):
+        print("未读异常仍有 %d 条（此前产生的，后台首屏可见；点「知道了」可清）"
+              % alert_doc["unseen"])
     if out.get("autorepair_enabled") and repair_log:
         print("自动修复：尝试 %d 个平台，需要重启生效 %d 个"
               % (len(repair_log), s.get("repaired_pending_restart", 0)))

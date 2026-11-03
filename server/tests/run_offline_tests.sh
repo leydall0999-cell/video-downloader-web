@@ -359,6 +359,10 @@ run_one test_userdata_web.py
 #  浏览器直存由前端回报 /api/usage/result。
 run_one test_usage_result_flag_web.py
 
+#  平台健康巡检 · 异常提醒链路（2026-11-03）：只报「比上一轮变差」、去重不堆叠、
+#  已读不被空跑冲掉、发现器崩了回退固定样本（详见 test_platform_health_alerts.py 头）。
+run_one test_platform_health_alerts.py
+
 echo ""
 echo "========================================="
 echo "  通过: $PASS   失败: $FAIL"
