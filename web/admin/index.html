@@ -773,6 +773,23 @@
     ensureView(name);
   }
 
+  // 「重新加载」= 刷新当前页签的数据（2026-11-03 修）。
+  // 原来这个按钮只跑 load()，而 load() 只重拉「单价表 + 身份」，其它页签的数据靠
+  // loadedView 懒加载锁着（加载过就再也不拉），运维监控更是 iframe、src 一旦写上就不再动
+  // —— 于是站在运维监控页点它，屏幕上什么都不会变，用户以为按钮坏了。
+  function refreshActive() {
+    const name = (location.hash || '').replace('#', '') || 'users';
+    if (name === 'ops') {
+      // iframe 重设 src 才可靠：直接 contentWindow.location.reload() 在跨文档/缓存下会静默失败，
+      // 而 t= 时间戳同时绕开浏览器启发式缓存（老坑：线上新版、后台里还是旧 KPI）。
+      const f = $('opsFrame');
+      if (f) f.src = '/ops/?embed=1&t=' + Date.now();
+      return;
+    }
+    loadedView[name] = false;
+    ensureView(name);
+  }
+
   // 危险操作二次确认（删号 / 封号 / 撤管理员）。
   // 后台现在是公网可达的：这类动作误点或账号被盗后的代价不可逆，所以不用
   // 一次点击就执行。自绘遮罩而不用 window.confirm —— 后者在桌面壳里样式不可控，
@@ -1917,7 +1934,10 @@
     $('memSearch').addEventListener('input', () => { if (MEMBERS.length) renderMembers(); });
   }
 
-  $('reload').addEventListener('click', () => { load().catch((e) => toast('加载失败：' + e.message, 3600)); });
+  $('reload').addEventListener('click', () => {
+    load().then(() => { refreshActive(); toast('已刷新'); })
+      .catch((e) => toast('加载失败：' + e.message, 3600));
+  });
   $('save').addEventListener('click', () => { save().catch((e) => toast('保存失败：' + e.message, 3600)); });
 })();
 </script>
