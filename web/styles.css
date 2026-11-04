@@ -1971,16 +1971,16 @@ textarea::placeholder { color: #b8c2d2; opacity: 1; }
 /* app 版功能介绍 */
 /* 「更多功能」能力总览 重设计（2026-11-04）：Hero 突出核心数据 + 卡片图标徽章 + 桌面端专属强调 */
 .app-intro-hero {
-  position: relative;
-  background: var(--card-bg, #fff);
-  border: 1px solid var(--border, #e5e7eb);
+  position: relative; overflow: hidden;
+  background: linear-gradient(135deg, #f4f1ff 0%, #eaf2ff 52%, #ecfbff 100%);
+  border: 1px solid #e3defb;
   border-radius: var(--radius-lg);
   padding: 1.5rem 1.6rem 1.35rem;
   margin-bottom: 1.5rem;
 }
 .app-intro-hero-badge {
   display: inline-block; font-size: .72rem; font-weight: 600; letter-spacing: .06em;
-  background: rgba(79, 70, 229, .1); color: #4f46e5; padding: .22rem .62rem;
+  background: #4f46e5; color: #fff; padding: .22rem .62rem;
   border-radius: 999px; margin-bottom: .7rem;
 }
 .app-intro-hero-title { font-size: 1.5rem; font-weight: 800; margin: 0 0 .45rem; letter-spacing: -.01em; color: var(--text, #111827); }
@@ -1989,10 +1989,10 @@ textarea::placeholder { color: #b8c2d2; opacity: 1; }
 .app-intro-stats { display: flex; gap: .8rem; flex-wrap: wrap; }
 .app-intro-stat {
   display: flex; flex-direction: column; gap: .12rem;
-  background: var(--bg, #f7f8fa); border: 1px solid var(--border, #e5e7eb);
+  background: #fff; border: 1px solid #e3defb;
   border-radius: var(--radius-md); padding: .6rem .95rem; min-width: 7.4rem;
 }
-.app-intro-stat--desk { background: rgba(79, 70, 229, .06); border-color: rgba(79, 70, 229, .2); }
+.app-intro-stat--desk { background: rgba(79, 70, 229, .1); border-color: rgba(79, 70, 229, .32); }
 .app-intro-stat-num { font-size: 1.55rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text, #111827); }
 .app-intro-stat--desk .app-intro-stat-num { color: #4f46e5; }
 .app-intro-stat-label { font-size: .75rem; color: var(--text-mute); }
