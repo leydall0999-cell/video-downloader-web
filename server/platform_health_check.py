@@ -416,12 +416,17 @@ def main() -> int:
             continue
         ev = _evidence_for(cfg.get("hosts") or [], succ, dem)
         urls = _samples_for(cfg, per_platform)
+        known_limit = (cfg.get("known_limit") or "").strip()
         if not urls:
             # 无样本 ⇒ 靠证据判定，不编造结论
             if ev["success_days"] > 0:
                 status, source = "healthy", "telemetry"
             elif ev["demand_weeks"] > 0:
                 status, source = "demand_only", "demand"
+            elif known_limit:
+                # 已知限制（服务器侧永远解析不了）：诚实标 limited 而非 unknown，
+                # 不触发自动修复、不进待办。
+                status, source = "limited", "known_limit"
             else:
                 status, source = "unknown", "none"
             items.append({"platform": key, "name": cfg.get("name", key),
@@ -471,7 +476,6 @@ def main() -> int:
             status = "sample_invalid"
         else:
             status = "broken"
-        known_limit = (cfg.get("known_limit") or "").strip()
         if known_limit and ok_n == 0:
             # 已知限制（服务器侧缺 Cookie/播放签名、只有桌面端能解析）：
             # 它**不是**「平台坏了」，也不能进待办和自动修复 —— 否则每天报同一条

@@ -23,7 +23,9 @@
   },
   "kuaishou": {
     "name": "快手",
-    "urls": [],
+    "urls": [
+      "https://www.kuaishou.com/short-video/3xktgkhtp79h49c"
+    ],
     "hosts": [
       "kuaishou.com",
       "chenzhongtech.com",
@@ -133,7 +135,8 @@
     "urls": [],
     "hosts": [
       "zhihu.com"
-    ]
+    ],
+    "known_limit": "服务器侧无该站解析器（yt-dlp 未提供），暂不支持"
   },
   "ximalaya": {
     "name": "喜马拉雅",
@@ -150,11 +153,14 @@
     "urls": [],
     "hosts": [
       "music.163.com"
-    ]
+    ],
+    "known_limit": "网易云解析接口当前异常（JSONDecodeError），歌曲/MV/播客均未接入，暂不可用"
   },
   "pearvideo": {
     "name": "梨视频",
-    "urls": [],
+    "urls": [
+      "https://www.pearvideo.com/video_1788754"
+    ],
     "hosts": [
       "pearvideo.com"
     ]
@@ -164,11 +170,14 @@
     "urls": [],
     "hosts": [
       "haokan.baidu.com"
-    ]
+    ],
+    "known_limit": "服务器侧无该站解析器（yt-dlp 未提供），暂不支持"
   },
   "yangshipin": {
     "name": "央视频",
-    "urls": [],
+    "urls": [
+      "https://w.yangshipin.cn/video?type=0&vid=s000022racg"
+    ],
     "hosts": [
       "yangshipin.cn",
       "cntv.cn",
@@ -180,11 +189,14 @@
     "urls": [],
     "hosts": [
       "bestv.com.cn"
-    ]
+    ],
+    "known_limit": "网页端仅提供约 9 秒试看片段，完整版需 APP/登录，服务器侧无法解析完整视频"
   },
   "hongguo": {
     "name": "红果短剧",
-    "urls": [],
+    "urls": [
+      "https://hongguoduanju.com/player/7682067414023949336"
+    ],
     "hosts": [
       "hongguoduanju.com",
       "novelquickapp.com"
@@ -195,18 +207,23 @@
     "urls": [],
     "hosts": [
       "xinpianchang.com"
-    ]
+    ],
+    "known_limit": "页面需登录/反爬，服务器侧无法下载网页，暂不支持"
   },
   "funshion": {
     "name": "风行网",
-    "urls": [],
+    "urls": [
+      "http://www.fun.tv/vplay/g-1082117.v-13884715/"
+    ],
     "hosts": [
       "fun.tv"
     ]
   },
   "movie1905": {
     "name": "1905电影网",
-    "urls": [],
+    "urls": [
+      "https://vip.1905.com/play/1692790.shtml"
+    ],
     "hosts": [
       "1905.com"
     ]
@@ -218,11 +235,14 @@
       "miguvideo.com",
       "music.migu.cn",
       "migu.cn"
-    ]
+    ],
+    "known_limit": "服务器侧无该站解析器（yt-dlp 未提供），暂不支持"
   },
   "nmwchxx": {
     "name": "金牌影院",
-    "urls": [],
+    "urls": [
+      "https://nmwchxx.com/vod/play/147933/sid/1328220"
+    ],
     "hosts": [
       "nmwchxx.com"
     ]
