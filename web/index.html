@@ -1528,9 +1528,20 @@
 
   <!-- 桌面客户端能力总览：全量对齐 App（分组 + 网页可用/仅桌面端标注） -->
   <section id="appIntroView" class="panel" hidden aria-labelledby="appIntroTitle">
-    <div class="app-intro-head">
-      <h2 id="appIntroTitle" class="guide-title">📱 桌面客户端还能做什么</h2>
-      <p class="app-intro-sub">网页版已支持 <b id="appIntroWebCount">8</b> 项能力；标注「仅桌面端」的 <b id="appIntroDesktopCount">16</b> 项需安装「视频工坊」客户端解锁</p>
+    <div class="app-intro-hero">
+      <span class="app-intro-hero-badge">能力全景</span>
+      <h2 class="app-intro-hero-title">网页能用，桌面端更猛</h2>
+      <p class="app-intro-hero-sub">一共 <b>24</b> 项能力。网页已经能直接搞定 <b>8</b> 项；剩下 <b>16</b> 项专属能力，装一个「视频工坊」客户端即可解锁——本地算力处理，免上传、更隐私。</p>
+      <div class="app-intro-stats">
+        <div class="app-intro-stat">
+          <span class="app-intro-stat-num" id="appIntroWebCount">8</span>
+          <span class="app-intro-stat-label">网页即可用</span>
+        </div>
+        <div class="app-intro-stat app-intro-stat--desk">
+          <span class="app-intro-stat-num" id="appIntroDesktopCount">16</span>
+          <span class="app-intro-stat-label">装客户端解锁</span>
+        </div>
+      </div>
     </div>
 
     <div class="app-intro-groups" id="appIntroGroups">
@@ -1539,32 +1550,32 @@
         <div class="app-intro-grid">
           <div class="app-intro-card" data-cap="download">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🌐</div><h3>视频下载</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>覆盖 YouTube、哔哩哔哩、抖音、腾讯等 100+ 国内外平台，自动识别清晰度，全程显示下载进度与剩余时间。</p>
+            <p>100+ 平台一站下载，自动识别清晰度，进度实时可见。</p>
           </div>
-          <div class="app-intro-card" data-cap="subscribe">
+          <div class="app-intro-card app-intro-card--desk" data-cap="subscribe">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🔔</div><h3>订阅追更</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>订阅频道 / UP 主 / 剧集，后台定时检测更新并自动下载，增量去重，不会重复下一遍。</p>
+            <p>订阅频道自动检测更新、增量下载，不重复下。</p>
           </div>
-          <div class="app-intro-card" data-cap="torrent">
+          <div class="app-intro-card app-intro-card--desk" data-cap="torrent">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🧲</div><h3>种子下载</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>magnet 链接、.torrent 文件、直链三种来源，支持暂停 / 继续、按文件跳过不想下的内容。</p>
+            <p>磁力 / 种子 / 直链三源，可暂停、可按文件跳过。</p>
           </div>
-          <div class="app-intro-card" data-cap="extension">
+          <div class="app-intro-card app-intro-card--desk" data-cap="extension">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🧩</div><h3>浏览器扩展嗅探</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>Chrome / Edge 扩展自动嗅探网页里的视频与音频，一键发回客户端下载（需配合桌面客户端）。</p>
+            <p>网页视频一键嗅探，发回客户端下载。</p>
           </div>
         </div>
       </div>
       <div class="app-intro-group">
         <h3 class="app-intro-group-title"><span aria-hidden="true">🎨</span>创作</h3>
         <div class="app-intro-grid">
-          <div class="app-intro-card" data-cap="commentary">
+          <div class="app-intro-card app-intro-card--desk" data-cap="commentary">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🎬</div><h3>视频解说成片</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>粘贴链接或上传本地视频，AI 自动完成转写 → 撰写解说文案 → 配音 → 字幕烧录，一键剪出成片；配音可用在线语音，也可用自己的声音做本地音色克隆。</p>
+            <p>链接→转写→配音→字幕，一键剪出成片。</p>
           </div>
           <div class="app-intro-card" data-cap="subtitle">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">📝</div><h3>AI 字幕转录</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>语音识别把视频 / 音频逐句转成带时间戳字幕，按停顿精准断句，一键导出 SRT / TXT。</p>
+            <p>语音自动转字幕，精准断句，导出 SRT。</p>
           </div>
         </div>
       </div>
@@ -1573,39 +1584,39 @@
         <div class="app-intro-grid">
           <div class="app-intro-card" data-cap="uploadconvert">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🔁</div><h3>视频格式转换</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>MP4 / MOV / WebM 等格式互转，编码与画质可选，支持批量。</p>
+            <p>MP4 / MOV / WebM 互转，支持批量。</p>
           </div>
           <div class="app-intro-card" data-cap="concat">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🔗</div><h3>视频拼接</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>多段视频按顺序合成一条，每段可单独设格式与参数。</p>
+            <p>多段视频按序合成一条。</p>
           </div>
           <div class="app-intro-card" data-cap="musicconvert">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🎵</div><h3>音乐转换</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>MP3 / FLAC / WAV / M4A 等批量互转，码率可选，转换完自动入库。</p>
+            <p>MP3 / FLAC / WAV 批量互转。</p>
           </div>
           <div class="app-intro-card" data-cap="imageconvert">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🖼️</div><h3>图片转换</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>JPG / PNG / WebP 等批量互转，质量、尺寸、白底填充自由调整。</p>
+            <p>JPG / PNG / WebP 批量互转。</p>
           </div>
-          <div class="app-intro-card" data-cap="compress">
+          <div class="app-intro-card app-intro-card--desk" data-cap="compress">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🗜️</div><h3>高效压缩</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>视觉无损 / 极致压缩双档，体积大幅下降且画面几乎不变；本机算力处理，免上传。</p>
+            <p>视觉无损压缩，体积大降画面不变。</p>
           </div>
-          <div class="app-intro-card" data-cap="sr">
+          <div class="app-intro-card app-intro-card--desk" data-cap="sr">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">✨</div><h3>高清修复</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>快速放大与 AI 超分重建细节，老片、低清素材也能救回来。</p>
+            <p>AI 超分，老片低清也能救回来。</p>
           </div>
-          <div class="app-intro-card" data-cap="share">
+          <div class="app-intro-card app-intro-card--desk" data-cap="share">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">📲</div><h3>生成二维码</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>本机文件一键上传为短链并生成二维码，扫码即看，适合发到手机或群里。</p>
+            <p>本机文件一键生成短链二维码。</p>
           </div>
-          <div class="app-intro-card" data-cap="page">
+          <div class="app-intro-card app-intro-card--desk" data-cap="page">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🌐</div><h3>生成网页</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>多个文件合成一个在线网页，一个链接发人；也可导出成离线单文件网页。</p>
+            <p>多文件合成一个在线网页分享。</p>
           </div>
-          <div class="app-intro-card" data-cap="bridge">
+          <div class="app-intro-card app-intro-card--desk" data-cap="bridge">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🔗</div><h3>视频 / 音频桥接</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>视频与音频互相合成、替换音轨，画面不动换掉背景音乐或旁白。</p>
+            <p>画面不动，换掉背景音乐或旁白。</p>
           </div>
         </div>
       </div>
@@ -1614,44 +1625,44 @@
         <div class="app-intro-grid">
           <div class="app-intro-card" data-cap="dw">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🧽</div><h3>图片去水印</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>框选水印区域，经典修复算法快速消除水印；支持放大编辑精细框选。</p>
+            <p>框选水印，算法快速消除。</p>
           </div>
           <div class="app-intro-card" data-cap="dwpdf">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">📄</div><h3>PDF 去水印</h3><span class="app-intro-tag tag-web">网页可用</span></div>
-            <p>批量去除文档水印，页范围、修复方法与输出清晰度（DPI）可调。</p>
+            <p>批量去文档水印，页范围可调。</p>
           </div>
-          <div class="app-intro-card" data-cap="dwvideo">
+          <div class="app-intro-card app-intro-card--desk" data-cap="dwvideo">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🎞️</div><h3>视频去水印</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>去除视频平台的角标与水印标识，逐帧处理保持画面稳定。</p>
+            <p>逐帧去除平台角标水印。</p>
           </div>
-          <div class="app-intro-card" data-cap="matting">
+          <div class="app-intro-card app-intro-card--desk" data-cap="matting">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">✂️</div><h3>AI 一键抠图</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>矩形框选 / 套索自由选区双模式，AI 自动抠出主体，批量导出透明 PNG。</p>
+            <p>矩形 / 套索选区，批量抠透明 PNG。</p>
           </div>
-          <div class="app-intro-card" data-cap="idphoto">
+          <div class="app-intro-card app-intro-card--desk" data-cap="idphoto">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🪪</div><h3>证件照制作</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>抠图换底一键出片：尺寸规格、排版张数、底色与人物大小可调，支持拖动微调构图。</p>
+            <p>换底出片，尺寸排版一键调。</p>
           </div>
-          <div class="app-intro-card" data-cap="ffmpeg_tools">
+          <div class="app-intro-card app-intro-card--desk" data-cap="ffmpeg_tools">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🎞</div><h3>抽帧 · 预览图 · 铃声</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>从视频抽封面、按间隔批量抽帧、生成九宫格预览图，或截一段做手机铃声（m4r）。</p>
+            <p>抽封面、九宫格、截段做铃声。</p>
           </div>
         </div>
       </div>
       <div class="app-intro-group">
         <h3 class="app-intro-group-title"><span aria-hidden="true">🗂</span>媒体库</h3>
         <div class="app-intro-grid">
-          <div class="app-intro-card" data-cap="library">
+          <div class="app-intro-card app-intro-card--desk" data-cap="library">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">📚</div><h3>本地媒体库</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>下载与加工的产物自动入库，缩略图墙浏览，支持搜索、筛选、播放、另存与删除。</p>
+            <p>产物自动入库，缩略图墙管理。</p>
           </div>
-          <div class="app-intro-card" data-cap="retention">
+          <div class="app-intro-card app-intro-card--desk" data-cap="retention">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🧹</div><h3>时效自动清理</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>缓存与碎片按保留期自动清理；媒体本体默认不删，一旦删除强制进系统回收站。</p>
+            <p>缓存按期自动清，本体进回收站。</p>
           </div>
-          <div class="app-intro-card" data-cap="crypto">
+          <div class="app-intro-card app-intro-card--desk" data-cap="crypto">
             <div class="app-intro-title-row"><div class="app-intro-ico" aria-hidden="true">🔐</div><h3>保险箱加密</h3><span class="app-intro-tag tag-desktop">仅桌面端</span></div>
-            <p>选中文件就地 AES-256 加密，播放时输密码临时解密，密钥只存在内存、不落盘。</p>
+            <p>AES-256 就地加密，密钥内存不落盘。</p>
           </div>
         </div>
       </div>
