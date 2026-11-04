@@ -1971,40 +1971,31 @@ textarea::placeholder { color: #b8c2d2; opacity: 1; }
 /* app 版功能介绍 */
 /* 「更多功能」能力总览 重设计（2026-11-04）：Hero 突出核心数据 + 卡片图标徽章 + 桌面端专属强调 */
 .app-intro-hero {
-  position: relative; overflow: hidden;
-  background: linear-gradient(135deg, #4f46e5 0%, #6d28d9 46%, #0891b2 100%);
+  position: relative;
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border, #e5e7eb);
   border-radius: var(--radius-lg);
-  padding: 1.55rem 1.6rem 1.4rem;
-  color: #fff; margin-bottom: 1.5rem;
-  box-shadow: 0 12px 34px rgba(79, 70, 229, .26);
-}
-.app-intro-hero::after {
-  content: ''; position: absolute; right: -46px; top: -46px;
-  width: 190px; height: 190px; border-radius: 50%;
-  background: rgba(255, 255, 255, .12);
-}
-.app-intro-hero::before {
-  content: ''; position: absolute; left: -50px; bottom: -60px;
-  width: 160px; height: 160px; border-radius: 50%;
-  background: rgba(255, 255, 255, .08);
+  padding: 1.5rem 1.6rem 1.35rem;
+  margin-bottom: 1.5rem;
 }
 .app-intro-hero-badge {
-  position: relative; display: inline-block; font-size: .72rem; font-weight: 600; letter-spacing: .06em;
-  background: rgba(255, 255, 255, .18); color: #fff; padding: .22rem .62rem;
+  display: inline-block; font-size: .72rem; font-weight: 600; letter-spacing: .06em;
+  background: rgba(79, 70, 229, .1); color: #4f46e5; padding: .22rem .62rem;
   border-radius: 999px; margin-bottom: .7rem;
 }
-.app-intro-hero-title { position: relative; font-size: 1.5rem; font-weight: 800; margin: 0 0 .45rem; letter-spacing: -.01em; }
-.app-intro-hero-sub { position: relative; margin: 0 0 1.05rem; font-size: .92rem; line-height: 1.65; color: rgba(255, 255, 255, .92); max-width: 50ch; }
-.app-intro-hero-sub b { color: #fff; font-weight: 700; }
-.app-intro-stats { position: relative; display: flex; gap: .8rem; flex-wrap: wrap; }
+.app-intro-hero-title { font-size: 1.5rem; font-weight: 800; margin: 0 0 .45rem; letter-spacing: -.01em; color: var(--text, #111827); }
+.app-intro-hero-sub { margin: 0 0 1.05rem; font-size: .92rem; line-height: 1.65; color: var(--text-mute); max-width: 54ch; }
+.app-intro-hero-sub b { color: var(--text, #111827); font-weight: 700; }
+.app-intro-stats { display: flex; gap: .8rem; flex-wrap: wrap; }
 .app-intro-stat {
   display: flex; flex-direction: column; gap: .12rem;
-  background: rgba(255, 255, 255, .14); border: 1px solid rgba(255, 255, 255, .22);
+  background: var(--bg, #f7f8fa); border: 1px solid var(--border, #e5e7eb);
   border-radius: var(--radius-md); padding: .6rem .95rem; min-width: 7.4rem;
 }
-.app-intro-stat--desk { background: rgba(255, 255, 255, .24); border-color: rgba(255, 255, 255, .42); }
-.app-intro-stat-num { font-size: 1.55rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
-.app-intro-stat-label { font-size: .75rem; color: rgba(255, 255, 255, .85); }
+.app-intro-stat--desk { background: rgba(79, 70, 229, .06); border-color: rgba(79, 70, 229, .2); }
+.app-intro-stat-num { font-size: 1.55rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text, #111827); }
+.app-intro-stat--desk .app-intro-stat-num { color: #4f46e5; }
+.app-intro-stat-label { font-size: .75rem; color: var(--text-mute); }
 
 .app-intro-groups { display: flex; flex-direction: column; gap: 1.5rem; margin-bottom: 1.4rem; }
 .app-intro-group-title {
