@@ -13,31 +13,22 @@
   抖音需要「登录」（手机号+验证码），B站 只需「过匿名风控」，无需登录、无需交互。
   （可选）若提供 --sessdata，则注入登录态导出完整 Cookie，能下更高清晰度。
 
-前置（ECS 上一次）：
-  cd /opt/vdl-worker
-  .venv/bin/pip install playwright
-  .venv/bin/python -m playwright install chromium
-
 用法：
-  # 单次（默认匿名过风控）
   .venv/bin/python bilibili_ecs_cookie.py --url https://hanyuxz.top --token <云端同步令牌>
-  # 注入登录态（更高画质，token 见桌面端 cloud_sync.json 或 Railway VDL_COOKIE_SYNC_TOKEN）
-  .venv/bin/python bilibili_ecs_cookie.py --url https://hanyuxz.top --token <令牌> --sessdata <你的SESSDATA>
-  # 循环刷新（建议用 cron 或 nohup，Cookie 约 30 天 TTL，每天刷一次足够）
+  .venv/bin/python bilibili_ecs_cookie.py --url https://hanyuxz.top --token <令牌> --sessdata <SESSDATA>
   .venv/bin/python bilibili_ecs_cookie.py --url https://hanyuxz.top --token <令牌> --loop --interval 86400
 
-令牌(url/token)也可走环境变量 VDL_COOKIE_SYNC_URL / VDL_COOKIE_SYNC_TOKEN，
-与桌面端 cloud_sync.json 保持一致即可。
+令牌(url/token)也可走环境变量 VDL_COOKIE_SYNC_URL / VDL_COOKIE_SYNC_TOKEN。
+
+对外暴露 push_once(url, token, sessdata) 供守护进程 vdl_cookie_daemon.py 复用。
 """
 import argparse
 import os
-import re
 import sys
 import time
 from pathlib import Path
 
 PROFILE = "/opt/vdl-worker/bili_profile"
-# 用一个公开视频页触发并渡过 412；BV 号随意，仅作「访问视频页」的载体
 _TRIGGER_VIDEO = "https://www.bilibili.com/video/BV1gtgE6AEmZ"
 
 
@@ -57,15 +48,29 @@ def launch(sessdata: str = ""):
 
     Path(PROFILE).mkdir(parents=True, exist_ok=True)
     pw = sync_playwright().start()
-    # user_data_dir 持久化登录态（注入 SESSDATA 后下次无需再注入）
     context = pw.chromium.launch_persistent_context(
         user_data_dir=PROFILE,
         headless=True,
         args=[
             "--no-sandbox",
-            "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
+            # 🔴 限制磁盘缓存：本 profile 的唯一价值是**登录态**（Cookies / Local
+            # Storage），HTTP/媒体缓存是纯浪费。1.6GB 内存机上该缓存曾膨胀到
+            # 739MB（profile 共 767MB），每次收集都要在磁盘缓存上反复换页，
+            # 直接表现就是渲染器卡在 D 状态、读盘 60MB/s、整机 iowait 90%
+            # （2026-11-05 事故）。限制后缓存不再增长，收集稳定在几十秒内完成。
+            "--disk-cache-size=10485760",
+            "--media-cache-size=10485760",
         ],
+        # 🔴 必须显式剔除 Playwright 的默认开关 --disable-dev-shm-usage：
+        # 它会把 Chromium 共享内存从 /dev/shm（本机 805MB tmpfs，实测 0% 占用）
+        # 改放到 /tmp 所在的**系统盘**。1.6GB 小内存机上内存压力一上来，渲染器就
+        # 反复换入换出这些磁盘 shm 文件，形成 50MB/s 级读盘死循环，进程卡在 D 状态
+        # 连 SIGKILL 都杀不掉（2026-11-05 实测持续 12min、整机 iowait 90%、load 12、
+        # 期间用户解析全被判「解析服务正忙」）。
+        # 注意：只从 args 里去掉没用 —— 该参数在 playwright driver 的默认开关表里
+        # （coreBundle.js chromiumSwitches），必须走 ignore_default_args 才真正生效。
+        ignore_default_args=["--disable-dev-shm-usage"],
         user_agent=(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -73,12 +78,10 @@ def launch(sessdata: str = ""):
         viewport={"width": 1280, "height": 800},
         locale="zh-CN",
     )
-    # 抹掉 webdriver 标记，降低被识别为自动化的概率
     context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
     if sessdata:
-        # 访问 bilibili 域后注入 SESSDATA，使后续请求带登录态
         page = context.new_page()
         page.goto("https://www.bilibili.com/", wait_until="domcontentloaded", timeout=30000)
         context.add_cookies([{
@@ -91,37 +94,63 @@ def launch(sessdata: str = ""):
     return pw, context
 
 
+def _verify_bili_cookie(header: str):
+    """用 nav 接口判断 Cookie 是否已渡过 412 风控，返回 (passed, hit_slider)。
+
+    🔴 为什么不再查 DOM：视频页渲染器在 2 核 / 1.6GB 机器上会把主线程堵死，
+    `page.locator(...).is_visible()` 这种 CDP 查询会**无限期挂住**（实测 100s+
+    不返回，且无超时可打断），直接导致整轮收集卡死、拖垮整机（2026-11-05）。
+    改成纯 HTTP 校验：拿到 JSON（code=0 已登录 / -101 未登录）即说明风控已过；
+    返回 412 或非 JSON 说明仍被拦（大概率命中滑块）。
+    """
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://api.bilibili.com/x/web-interface/nav",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            ),
+            "Cookie": header,
+            "Referer": "https://www.bilibili.com/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            raw = r.read()
+        data = json.loads(raw.decode("utf-8", "replace"))
+        code = data.get("code")
+        return code in (0, -101), code == -352
+    except Exception:
+        # 412 验证页 / 网络异常：一律视为未通过，交给下一轮重试
+        return False, True
+
+
 def _collect_cookies(sessdata: str = ""):
     pw, context = launch(sessdata)
     try:
         page = context.new_page()
-        # 1) 先访问首页，初始化 buvid3/buvid4/b_nut 等匿名 Cookie
         page.goto("https://www.bilibili.com/", wait_until="domcontentloaded", timeout=30000)
         time.sleep(3)
-        # 2) 再访问视频页，触发并渡过 412 验证页（JS 自动完成，国内 IP 通常无滑块）
+        # 访问视频页只为触发并渡过 412 风控；**绝不在此查 DOM**（见 _verify_bili_cookie）。
         page.goto(_TRIGGER_VIDEO, wait_until="domcontentloaded", timeout=30000)
-        passed = False
-        hit_slider = False
-        for _ in range(25):
-            time.sleep(1)
-            try:
-                if page.locator("video, .bpx-player-video-wrap, #bilibili-player").first.is_visible(timeout=400):
-                    passed = True
-                    break
-            except Exception:
-                pass
-            try:
-                if page.locator("text=安全验证, text=滑动验证, text=请滑动").first.is_visible(timeout=400):
-                    hit_slider = True
-                    break
-            except Exception:
-                pass
+        time.sleep(6)  # 给风控 JS 留执行时间
         cookies = context.cookies()
         header = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+        passed, hit_slider = _verify_bili_cookie(header)
         return header, passed, hit_slider, cookies
     finally:
-        context.browser.close()
-        pw.stop()
+        # close 也可能因渲染器卡死而挂住；失败就放弃，由调用方/超时兜底清理进程
+        try:
+            context.browser.close()
+        except Exception:
+            pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
 
 
 def _push_to_cloud(url: str, token: str, header: str) -> dict:
@@ -146,13 +175,27 @@ def _push_to_cloud(url: str, token: str, header: str) -> dict:
         return json.loads(r.read().decode() or "{}")
 
 
+def push_once(url: str, token: str, sessdata: str = "") -> tuple:
+    """收集并推送一次，返回 (header, resp_dict)。守护进程与 CLI 共用。"""
+    header, passed, hit_slider, cookies = _collect_cookies(sessdata)
+    print(f"✅ 收集到 {len(cookies)} 条 Cookie；验证页通过={'是' if passed else '否'}"
+          f"{'；⚠️命中滑块需 VNC 手动过一次' if hit_slider else ''}", flush=True)
+    if hit_slider:
+        print("   本次未成功过风控，Cookie 可能仍带 412；稍后重试或改用 --sessdata 注入登录态。", flush=True)
+    try:
+        resp = _push_to_cloud(url, token, header)
+        print("   推送结果：", resp, flush=True)
+        return header, resp
+    except Exception as e:
+        print("   ❌ 推送失败：", str(e)[:200], flush=True)
+        return header, {"error": str(e)[:200]}
+
+
 def main():
     _need_playwright()
     ap = argparse.ArgumentParser(description="ECS 无头过 B站 412 并推送 Cookie 到网页版公共池")
-    ap.add_argument("--url", default=os.environ.get("VDL_COOKIE_SYNC_URL", ""),
-                    help="网页版地址，如 https://hanyuxz.top")
-    ap.add_argument("--token", default=os.environ.get("VDL_COOKIE_SYNC_TOKEN", ""),
-                    help="云端同步令牌（与桌面端一致）")
+    ap.add_argument("--url", default=os.environ.get("VDL_COOKIE_SYNC_URL", ""))
+    ap.add_argument("--token", default=os.environ.get("VDL_COOKIE_SYNC_TOKEN", ""))
     ap.add_argument("--sessdata", default="", help="可选：注入 SESSDATA 导出完整登录态 Cookie")
     ap.add_argument("--loop", action="store_true", help="循环刷新")
     ap.add_argument("--interval", type=int, default=86400, help="循环间隔（秒）")
@@ -163,28 +206,10 @@ def main():
         sys.exit(1)
 
     while True:
-        header, passed, hit_slider, cookies = _collect_cookies(args.sessdata)
-        print(f"✅ 收集到 {len(cookies)} 条 Cookie；验证页通过={'是' if passed else '否'}"
-              f"{'；⚠️命中滑块需 VNC 手动过一次' if hit_slider else ''}")
-        if hit_slider:
-            print("   本次未成功过风控，Cookie 可能仍带 412；稍后重试或改用 --sessdata 注入登录态。")
-        try:
-            resp = _push_to_cloud(args.url, args.token, header)
-            print("   推送结果：", resp)
-            # 打印完整 Cookie 字符串，供用户手动粘贴到网页端「会话 Cookie」框应急验证。
-            # 注意：不脱敏——因为本就用于用户自己粘贴到自己的浏览器；测试完建议重跑脚本轮换 SESSDATA。
-            print("   [DEBUG] 复制下面这整行，粘贴到网页端「会话 Cookie」框（含登录态）：")
-            print("   " + header)
-            if args.sessdata:
-                if "SESSDATA=" in header:
-                    print("   ✅ 已采集到 SESSDATA 登录态 Cookie")
-                else:
-                    print("   ⚠️ 未采集到 SESSDATA，注入可能失败：请检查 SESSDATA 值是否正确、是否已过期")
-        except Exception as e:
-            print("   ❌ 推送失败：", str(e)[:200])
+        push_once(args.url, args.token, args.sessdata)
         if not args.loop:
             break
-        print(f"   等待 {args.interval}s 后刷新...")
+        print(f"   等待 {args.interval}s 后刷新...", flush=True)
         time.sleep(args.interval)
 
 

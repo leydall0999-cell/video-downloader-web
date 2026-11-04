@@ -363,6 +363,12 @@ run_one test_usage_result_flag_web.py
 #  已读不被空跑冲掉、发现器崩了回退固定样本（详见 test_platform_health_alerts.py 头）。
 run_one test_platform_health_alerts.py
 
+#  Cookie 守护进程 / Chromium 卡死守卫（2026-11-05）：B站 Chromium 不得把共享内存
+#  放到 /tmp 系统盘（--disable-dev-shm-usage），后台收集必须有硬超时并在超时后清理
+#  chromium，否则一个 D 状态渲染器就能把 2 核 VPS 拖到 iowait 90%、用户解析全线
+#  「解析服务正忙」（详见 test_cookie_daemon_chromium_guard.py 头）。
+run_one test_cookie_daemon_chromium_guard.py
+
 echo ""
 echo "========================================="
 echo "  通过: $PASS   失败: $FAIL"

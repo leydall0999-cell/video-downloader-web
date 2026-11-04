@@ -198,6 +198,11 @@ _RESOLVERS = {
 
 PUSH_RETRIES = int(os.environ.get("VDL_COOKIE_PUSH_RETRIES", "2"))
 PUSH_RETRY_BACKOFF = int(os.environ.get("VDL_COOKIE_PUSH_BACKOFF", "15"))
+# 后台收集的硬上限。_collect_cookies 正常最坏约 88s（两次 goto 30s + 3s 等待 +
+# 25s 轮询），留余量取 150s。超时必须放弃本轮并清理 chromium：该函数持有
+# _resolve_lock，一旦 chromium 卡死（内存压力下渲染器 D 状态抖动），锁永不释放，
+# 所有用户解析都会被判「解析服务正忙」——2026-11-05 实测卡死 12min 即此故。
+COLLECT_TIMEOUT = int(os.environ.get("VDL_COOKIE_COLLECT_TIMEOUT", "150"))
 
 
 def _collect_and_cache():
@@ -211,7 +216,27 @@ def _collect_and_cache():
             logger.info("[collect] 解析占用中，跳过本轮收集（120s 后重试）")
             return None
     try:
-        header, passed, hit_slider, cookies = _collect_cookies(SESSDATA)
+        # 硬超时兜底：见 COLLECT_TIMEOUT 注释。线程无法强杀，但必须保证
+        # ①锁一定释放（否则用户解析被饿死）②卡死的 chromium 被 SIGKILL。
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(_collect_cookies, SESSDATA)
+        try:
+            header, passed, hit_slider, cookies = fut.result(timeout=COLLECT_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            ex.shutdown(wait=False)
+            _kill_all_chromium()
+            logger.warning("[collect] 收集超时(>%ss)，已清理 chromium 并跳过本轮",
+                           COLLECT_TIMEOUT)
+            with _lock:
+                _state.update(ts=int(time.time()), ok=False,
+                              msg="collect timeout >%ss" % COLLECT_TIMEOUT)
+            return None
+        except Exception as e:  # noqa: BLE001
+            ex.shutdown(wait=False)
+            _kill_all_chromium()
+            logger.warning("[collect] 收集失败，已清理 chromium: %s", str(e)[:150])
+            raise
+        ex.shutdown(wait=False)
         with _lock:
             _cached.update(cookie=header, cookies=cookies, ts=int(time.time()),
                            passed=passed, hit_slider=hit_slider)
@@ -279,24 +304,55 @@ def do_push(wait: bool = True):
 def _kill_all_chromium():
     """清掉所有残留 chrome-headless 进程（Playwright 的 browser.close() 偶发漏杀，
     1.6GB 小内存 VPS 上孤儿 chromium 会拖慢后续解析甚至导致 Railway 90s 超时）。
-    do_resolve 串行化 + 每次解析前清理，保证同一时刻只有本次解析的 chromium 存活。"""
-    try:
-        out = subprocess.run(
-            ["ps", "-eo", "pid=,comm="],
-            capture_output=True, text=True, timeout=5,
-        ).stdout
+    do_resolve 串行化 + 每次解析前清理，保证同一时刻只有本次解析的 chromium 存活。
+
+    🔴 关键：SIGKILL 对 D（disk sleep）状态进程**不生效**，要等 I/O 完成才退出。
+    2026-11-05 事故就是孤儿渲染器卡在 D 状态反复读磁盘 shm（51MB/s）达 12min，
+    杀不掉又不断拖垮整机。这里杀完必须复核，把「杀不死的」显式记 ERROR，
+    否则下次同类问题只表现为「网站变慢」，无从定位。
+    """
+    def _chromium_pids():
+        try:
+            out = subprocess.run(
+                ["ps", "-eo", "pid=,stat=,comm="],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+        except Exception:  # noqa: BLE001
+            return []
+        pids = []
         for line in out.splitlines():
-            parts = line.strip().split(None, 1)
-            if len(parts) != 2 or "chrom" not in parts[1].lower():
+            parts = line.strip().split(None, 2)
+            if len(parts) != 3 or "chrom" not in parts[2].lower():
+                continue
+            # Z=zombie：已经死了、只等父进程回收，不是「杀不掉的活进程」，
+            # 计进存活会造成假告警（2026-11-05 首版实测踩到）。
+            if parts[1].startswith("Z"):
                 continue
             try:
                 pid = int(parts[0])
-                if pid > 0 and pid != os.getpid():
-                    os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, ValueError):
-                pass
-    except Exception:
-        pass
+            except ValueError:
+                continue
+            if pid > 0 and pid != os.getpid():
+                pids.append(pid)
+        return pids
+
+    for pid in _chromium_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    survivors = _chromium_pids()
+    if survivors:
+        try:
+            states = subprocess.run(
+                ["ps", "-o", "pid=,state=,etime=,args=", "-p",
+                 ",".join(str(p) for p in survivors)],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip().replace("\n", " | ")
+        except Exception:  # noqa: BLE001
+            states = str(survivors)
+        logger.error("[chromium] SIGKILL 后仍有 %d 个存活（多半卡在 D 状态等 I/O，"
+                     "会持续吃磁盘）：%s", len(survivors), states[:500])
 
 
 def _prune_profile_caches(max_age_hours: float = 48.0) -> int:

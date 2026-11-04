@@ -50,8 +50,12 @@ const DESK_CAPS = [
   // 2026-10-25：archive（一键归档网盘）卡片已随「网盘只做下载」的定位下线并删除，不再计入
 ];
 
-// 卡片格式：<div class="app-intro-card" data-cap="xxx"> … <span class="app-intro-tag tag-web|tag-desktop">
-const cardRe = /<div class="app-intro-card" data-cap="([^"]+)">([\s\S]*?)\n {10}<\/div>/g;
+// 卡片格式：<div class="app-intro-card[ app-intro-card--desk]" data-cap="xxx"> … <span class="app-intro-tag tag-web|tag-desktop">
+// 2026-11-05 修订：`f554574` 重设计后，仅桌面端的卡片多了一个修饰类
+// `app-intro-card--desk`（网页可用的仍是精确 `app-intro-card`）。旧正则只认精确类名，
+// 于是只匹配到 8 张网页卡就断言失败 —— 红的是过期断言，不是页面回退（页面仍有 24 张）。
+// 这里放宽到「主类 + 可选修饰类」，能力清单与端标注的实质校验保持不变。
+const cardRe = /<div class="app-intro-card(?: [^"]*)?" data-cap="([^"]+)">([\s\S]*?)\n {10}<\/div>/g;
 const cards = [];
 let m;
 while ((m = cardRe.exec(intro)) !== null) cards.push({ cap: m[1], body: m[2] });
@@ -101,9 +105,12 @@ const webCount = Object.keys(WEB_CAPS).length;
 const deskCount = DESK_CAPS.length;
 const hasStats = /id="appIntroWebCount"/.test(intro);
 if (hasStats) {
-  assert.ok(new RegExp(`id="appIntroWebCount">${webCount}</b>`).test(intro),
+  // 2026-11-05 修订：`f554574` 重设计把统计数字的容器从 <b> 换成
+  // <span class="app-intro-stat-num">。这里只钉「数字本身必须等于实算值」，
+  // 不再钉标签名 —— 否则改个语义标签就误报（数字错位才是真问题）。
+  assert.ok(new RegExp(`id="appIntroWebCount">${webCount}<`).test(intro),
     `index.html 静态占位应为「网页可用 ${webCount}」，否则首屏会闪错数字`);
-  assert.ok(new RegExp(`id="appIntroDesktopCount">${deskCount}</b>`).test(intro),
+  assert.ok(new RegExp(`id="appIntroDesktopCount">${deskCount}<`).test(intro),
     `index.html 静态占位应为「仅桌面端 ${deskCount}」`);
 }
 
@@ -120,10 +127,17 @@ if (hasStats) {
 }
 
 // ---- 样式：分组视觉 ----
-for (const sel of ['.app-intro-groups {', '.app-intro-group-title {', '.app-intro-group-title::before {',
+// 2026-11-05 修订：`f554574` 重设计后，分组标题的图标由 `::before` 伪元素
+// 改为标题内的真实 <span aria-hidden="true">⬇️</span>（胶囊底色也换了）。
+// 只要求「分组容器 / 标题 / 网格 / CTA」这些结构类存在；图标改用等价判定，
+// 避免把「换了图标实现方式」误判成「视觉退化」。
+for (const sel of ['.app-intro-groups {', '.app-intro-group-title {',
   '.app-intro-group .app-intro-grid {', '.app-intro-cta-actions {']) {
   assert.ok(stylesCss.includes(sel), `styles.css 缺少 ${sel}`);
 }
+assert.ok(stylesCss.includes('.app-intro-group-title::before {')
+  || /<h3 class="app-intro-group-title"><span aria-hidden="true">/.test(intro),
+  '分组标题必须有图标（::before 伪元素或标题内 span 二者其一）');
 // 已废弃样式不得复活（页面已无对应元素）
 for (const dead of ['.app-intro-soon {', '.app-intro-soon-plain {', '.app-intro-cta-card {']) {
   assert.ok(!stylesCss.includes(dead), `${dead} 是已删元素的死样式，不该再出现`);
