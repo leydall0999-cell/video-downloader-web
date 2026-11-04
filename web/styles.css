@@ -1970,6 +1970,15 @@ textarea::placeholder { color: #b8c2d2; opacity: 1; }
 
 /* app 版功能介绍 */
 /* 「更多功能」能力总览 重设计（2026-11-04）：Hero 突出核心数据 + 卡片图标徽章 + 桌面端专属强调 */
+/* 2026-11-05 对齐首页宽度：移除外层 .panel 边框+内边距，使区块外缘与首页 hero 同为 880 满宽、
+   内容左右对齐首页（此前套 .panel 多缩 1.25rem）。边框/背景交由内部 hero 与卡片各自承载。 */
+#appIntroView.panel {
+  padding: 0; background: none; border: none; box-shadow: none;
+}
+/* 宽视口下与首页 #homeView 同步放宽到 1100（同断点、同公式，左右边缘完全对齐） */
+@media (min-width: 1200px) {
+  #appIntroView.panel { width: 1100px; margin-inline: calc((100% - 1100px) / 2); }
+}
 .app-intro-hero {
   position: relative; overflow: hidden;
   background: linear-gradient(135deg, #f4f1ff 0%, #eaf2ff 52%, #ecfbff 100%);
