@@ -63,6 +63,11 @@
   .kpi { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 16px; min-width:104px; }
   .kpi b { display:block; font-size:20px; font-weight:600; line-height:1.3; }
   .kpi span { color:var(--muted); font-size:12px; }
+  .kpi-click { cursor:pointer; transition:border-color .15s; }
+  .kpi-click:hover { border-color:var(--accent); }
+  .kpi-click.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  #healthDetail { margin:2px 0 12px; }
+  #healthDetail .hd-title { font-weight:600; margin:4px 0 8px; }
   details.ev { margin-top:6px; }
   details.ev summary { cursor:pointer; color:var(--accent); font-size:12px; }
   details.ev pre { white-space:pre-wrap; word-break:break-all; color:var(--muted); font-size:12px; margin:6px 0 0; font-family:var(--font-mono,monospace); }
@@ -179,6 +184,7 @@
       并用独立子进程复测，升版后仍失败才落到下面的派单里 —— 派单 = <b>真的需要人动手</b>的清单。
     </p>
     <div class="kpis" id="healthKpis"></div>
+    <div id="healthDetail" style="display:none"></div>
     <p class="note" id="healthMeta"></p>
     <div id="ticketBox"></div>
     <details class="sub">
@@ -537,8 +543,11 @@
       + headers.map((h) => '<th>' + esc(h) + '</th>').join('')
       + '</tr></thead><tbody>' + rows.join('') + '</tbody></table></div>';
   }
-  function kpi(n, label) {
-    return '<div class="kpi"><b>' + esc(n) + '</b><span>' + esc(label) + '</span></div>';
+  function kpi(n, label, filter) {
+    const attr = filter
+      ? ' class="kpi kpi-click" data-filter="' + esc(filter) + '" title="点击查看明细"'
+      : ' class="kpi"';
+    return '<div' + attr + '><b>' + esc(n) + '</b><span>' + esc(label) + '</span></div>';
   }
 
   function renderTickets(tickets) {
@@ -618,18 +627,22 @@
     const s = (check && check.summary) || {};
     const counts = s.counts || {};
     let kpis = '';
-    kpis += kpi(s.total != null ? s.total : '—', '巡检平台数');
-    kpis += kpi(s.actionable != null ? s.actionable : 0, '需行动');
-    kpis += kpi(counts.broken || 0, 'broken');
-    kpis += kpi(counts.needs_manual || 0, '需人工');
-    kpis += kpi(counts.repaired_pending_restart || 0, '已修待重启');
-    kpis += kpi((d.repair_tickets || []).length, '未结派单');
+    kpis += kpi(s.total != null ? s.total : '—', '巡检平台数', 'total');
+    kpis += kpi(s.actionable != null ? s.actionable : 0, '需行动', 'actionable');
+    kpis += kpi(counts.broken || 0, 'broken', 'broken');
+    kpis += kpi(counts.needs_manual || 0, '需人工', 'needs_manual');
+    kpis += kpi(counts.repaired_pending_restart || 0, '已修待重启', 'repaired');
+    kpis += kpi((d.repair_tickets || []).length, '未结派单', 'tickets');
     // 未读异常 = 巡检发现的「比上一轮变差」，点红条上的「知道了」清零。
     // 以提醒文件为准（d.alerts 恒有值）；健康表里的 alerts_unseen 是那一轮的快照，
     // 只当接口没给 alerts 时的兜底 —— 别让过期快照把红条数字顶上去。
-    kpis += kpi(d.alerts ? Number(d.alerts.unseen || 0) : Number(s.alerts_unseen || 0), '未读异常');
-    kpis += kpi(counts.limited || 0, '已知受限');
+    kpis += kpi(d.alerts ? Number(d.alerts.unseen || 0) : Number(s.alerts_unseen || 0), '未读异常', 'alerts');
+    kpis += kpi(counts.limited || 0, '已知受限', 'limited');
     $('healthKpis').innerHTML = kpis;
+    // KPI 下钻：点卡片展开对应明细，再点同一张收起（见 toggleHealthDetail）
+    $('healthKpis').querySelectorAll('.kpi-click').forEach((el) => {
+      el.addEventListener('click', () => toggleHealthDetail(el.dataset.filter, d, el));
+    });
     renderAlerts(d.alerts);
 
     if (!check) {
@@ -688,6 +701,82 @@
           + '<td>' + never + '</td></tr>';
       }),
       '最近 12 周没有未满足的解析需求。');
+  }
+
+  // ---------------- KPI 下钻明细（2026-11-05） ----------------
+  // 点统计卡展开对应平台/派单/异常的明细表，再点同一张卡收起。
+  // 数据源就是接口已返回的 check.items / repair_tickets / alerts.events，不加后端端点。
+  // actionable 口径必须与 platform_health_check.py 的 summary 一致，别只对一半。
+  const HEALTH_ACTIONABLE = ['broken', 'needs_manual', 'sample_invalid', 'degraded',
+    'repaired_pending_restart', 'demand_only'];
+  function platformRows(list) {
+    return list.map((it) => {
+      const ev = it.evidence || {};
+      const res = (it.results || []).map((r) =>
+        (r.ok ? '<span class="chip good">样本通过</span>' : '<span class="chip bad">样本失败</span>')
+        + (r.category ? ' <span class="note">' + esc(r.category) + '</span>' : '')
+        + (r.msg ? '<details class="ev"><summary>详情</summary><pre>' + esc(r.msg) + '</pre></details>' : ''))
+        .join(' ') || '<span class="note">—</span>';
+      return '<tr><td>' + esc(it.name || it.platform || '—')
+        + '<br><span class="note">' + esc(it.platform || '') + '</span></td>'
+        + '<td>' + chip(it.status) + '</td>'
+        + '<td class="real">' + esc(ev.success_total || 0) + ' 次 / ' + esc(ev.success_days || 0) + ' 天</td>'
+        + '<td class="real">' + esc(ev.demand_total || 0) + '</td>'
+        + '<td class="real">' + esc(fmtTs(ev.last_success_ts)) + '</td>'
+        + '<td>' + res + '</td></tr>';
+    });
+  }
+  function healthDetailHTML(filter, d) {
+    const items = ((d && d.check && d.check.items) || []);
+    let title, html;
+    if (filter === 'tickets') {
+      const list = (d.repair_tickets || []);
+      title = '未结派单（' + list.length + '）';
+      html = table(['平台', '状态', '根因', '建议动作', '派单时间'],
+        list.map((t) => '<tr><td>' + esc(t.name || t.platform || '—') + '</td>'
+          + '<td>' + chip(t.status) + '</td>'
+          + '<td>' + esc(t.root_cause_label || t.root_cause || '—') + '</td>'
+          + '<td class="where">' + esc(t.suggested_action || '—') + '</td>'
+          + '<td class="real">' + esc(t.created_at || '') + '</td></tr>'),
+        '没有未结派单：所有平台要么正常，要么已由升版自动修好。');
+    } else if (filter === 'alerts') {
+      const evs = (((d.alerts || {}).events) || []).filter((e) => e && !e.ack);
+      title = '未读异常（' + evs.length + '）';
+      html = table(['平台', '状态变化', '详情'],
+        evs.map((e) => {
+          const to = STATUS_CHIP[e.to] || ['warn', e.to];
+          return '<tr><td>' + esc(e.name || e.platform || '—') + '</td>'
+            + '<td>' + esc(e.from || '—') + ' → <span class="chip ' + to[0] + '">' + esc(to[1]) + '</span></td>'
+            + '<td>' + esc(e.detail || '—') + '</td></tr>';
+        }),
+        '没有未读异常。');
+    } else {
+      let list;
+      if (filter === 'total') list = items;
+      else if (filter === 'actionable') list = items.filter((it) => HEALTH_ACTIONABLE.indexOf(it.status) >= 0);
+      else if (filter === 'repaired') list = items.filter((it) => it.status === 'repaired_pending_restart');
+      else list = items.filter((it) => it.status === filter);
+      title = '平台明细（' + list.length + '）';
+      html = table(['平台', '状态', '成功遥测（30 天）', '需求次数', '最近成功', '样本实测'],
+        platformRows(list),
+        '这一类下当前没有平台。');
+    }
+    return '<p class="hd-title">' + esc(title)
+      + '　<span class="note">再点同一张卡片收起</span></p>' + html;
+  }
+  function toggleHealthDetail(filter, d, cardEl) {
+    const box = $('healthDetail');
+    const kpisBox = $('healthKpis');
+    const wasOpen = box.dataset.filter === filter && box.style.display !== 'none';
+    kpisBox.querySelectorAll('.kpi-click.on').forEach((el) => el.classList.remove('on'));
+    if (wasOpen) {
+      box.style.display = 'none'; box.innerHTML = ''; delete box.dataset.filter;
+      return;
+    }
+    box.dataset.filter = filter;
+    box.innerHTML = healthDetailHTML(filter, d);
+    box.style.display = '';
+    if (cardEl) cardEl.classList.add('on');
   }
 
   // 三端用量 · 平台全景（2026-11-01）
