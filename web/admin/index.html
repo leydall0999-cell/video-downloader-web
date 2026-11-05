@@ -1213,9 +1213,15 @@
     const now = Date.now() / 1000;
     const dlOk = Number(a.member_until_dl || 0) > now;
     const aiOk = Number(a.member_until_ai || 0) > now;
+    // 会员到期卡片：没开通显示「未开通」而不是「—」，避免被误读成页面没加载出来；
+    // 时间戳存在但已过 now 则显示「已过期」。
+    const dlUntil = Number(a.member_until_dl || 0) > 0
+      ? (dlOk ? ymd(a.member_until_dl) : '已过期') : '未开通';
+    const aiUntil = Number(a.member_until_ai || 0) > 0
+      ? (aiOk ? ymd(a.member_until_ai) : '已过期') : '未开通';
     let html = '<div class="kpis">'
-      + kpi(dlOk ? ymd(a.member_until_dl) : '—', '下载会员到期')
-      + kpi(aiOk ? ymd(a.member_until_ai) : '—', 'AI 会员到期')
+      + kpi(dlUntil, '下载会员到期')
+      + kpi(aiUntil, 'AI 会员到期')
       + kpi(a.ai_credits_left != null ? a.ai_credits_left : '—', 'AI 积分余额')
       + kpi(a.perm_credits != null ? a.perm_credits : '—', '永久 + 赠送积分')
       + kpi(devs.length, '已绑定设备')
