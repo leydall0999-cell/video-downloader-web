@@ -1243,6 +1243,31 @@
           + '</td><td>' + esc(det || '—') + '</td></tr>';
       }), '')
       : '<p class="empty">还没有按天累积的用量记录（该功能上线前的数据无法补录）。</p>';
+    // 使用明细（2026-11-05）：后端 usage_history 每天都带 details（每条记录的
+    // 标题/平台/时间戳），之前只渲染了 counts 汇总 ⇒ 看上去「只有数字」。
+    // 这里把近 14 天的明细全部摊平成一张表，最新在前；无时间戳的退回日期。
+    const fmtT = (ts) => (ts ? new Date(Number(ts) * 1000).toLocaleString('zh-CN',
+      { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
+    const detRows = [];
+    days.slice().reverse().forEach((x) => {
+      const dm = x.details || {};
+      Object.keys(dm).forEach((k) => {
+        (Array.isArray(dm[k]) ? dm[k] : []).forEach((it) => {
+          it = it || {};
+          detRows.push({ k: k, t: it.t || '', p: it.p || '',
+            when: it.at ? fmtT(it.at) : String(x.date || '') });
+        });
+      });
+    });
+    detRows.sort((x, y) => (y.when > x.when ? 1 : -1));
+    html += '<p class="sub-h" style="margin-top:14px">使用明细（近 14 天，每一条记录）</p>';
+    html += detRows.length
+      ? table(['时间', '功能', '标题', '平台'], detRows.map((r) => '<tr>'
+        + '<td class="real">' + esc(r.when || '—') + '</td>'
+        + '<td>' + esc(RES_LABEL[r.k] || r.k) + '</td>'
+        + '<td>' + esc(r.t || '—') + '</td>'
+        + '<td>' + esc(r.p || '—') + '</td></tr>'), '')
+      : '<p class="empty">没有逐条明细（旧数据只存了汇总次数）。</p>';
     html += '<p class="sub-h" style="margin-top:14px">设备（' + devs.length + '）</p>';
     html += devs.length
       ? table(['设备名', '指纹', '最近在线'], devs.map((d) => '<tr><td>' + esc(d.name || '—')
