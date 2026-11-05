@@ -160,6 +160,15 @@ _clear_calls = _calls(_clear)
 _must(any(c[0] == "_profile_in_use" for c in _clear_calls),
       "_clear_profile_caches 先用 _profile_in_use 判占用（防删运行中浏览器的缓存）")
 
+# 🔴 判占用只能认 Chromium 的 --user-data-dir= 标记：裸路径子串会被父进程
+# （cron / shell / 运维命令）cmdline 命中，实测导致清理恒跳过（2026-11-06）。
+_piu = _find_func(btree, "_profile_in_use")
+_must(_piu is not None, "_profile_in_use 可解析")
+_piu_consts = [n.value for n in ast.walk(_piu)
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+_must(any("--user-data-dir=" in c for c in _piu_consts),
+      "_profile_in_use 用 --user-data-dir= 标记匹配（裸路径子串会假阳性）")
+
 # launch() 必须在启动浏览器之前调用清理
 launch_calls = [c[0] for c in _calls(launch)]
 _must("_clear_profile_caches" in launch_calls,

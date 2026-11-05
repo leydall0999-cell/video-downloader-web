@@ -47,11 +47,15 @@ _CACHE_DIRS = (
 def _profile_in_use() -> bool:
     """是否有其它进程正持有本 profile（含卡死残留的 Chromium）。
 
+    🔴 只认 Chromium 的 `--user-data-dir=<PROFILE>` 标记，**不能**用裸路径子串匹配：
+    父进程（cron / shell / 运维命令）的 cmdline 里只要出现该路径就会假阳性，
+    实测导致清理恒被跳过、缓存继续膨胀（2026-11-06）。
     读 /proc/*/cmdline 判断；非 Linux（如本机跑单测）一律视为未占用。
     """
     proc = Path("/proc")
     if not proc.is_dir():
         return False
+    marker = ("--user-data-dir=" + PROFILE).encode()
     me = str(os.getpid())
     try:
         for d in proc.iterdir():
@@ -61,7 +65,7 @@ def _profile_in_use() -> bool:
                 cl = (d / "cmdline").read_bytes()
             except OSError:
                 continue
-            if PROFILE.encode() in cl:
+            if marker in cl:
                 return True
     except OSError:
         return True  # 读不到就保守放弃清理
