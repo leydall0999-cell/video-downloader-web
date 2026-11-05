@@ -1247,7 +1247,14 @@
     // 标题/平台/时间戳），之前只渲染了 counts 汇总 ⇒ 看上去「只有数字」。
     // 这里把近 14 天的明细全部摊平成一张表，最新在前；无时间戳的退回日期。
     const fmtT = (ts) => (ts ? new Date(Number(ts) * 1000).toLocaleString('zh-CN',
-      { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
+      { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+        second: '2-digit' }) : '');
+    // 明细状态：r=1 成功 / r=0 未完成 / 缺省＝客户端没回写结果（未上报）。
+    const statTd = (r) => {
+      if (r === 1) return '<span style="color:#34d399">✅ 成功</span>';
+      if (r === 0) return '<span style="color:#f87171">✗ 未完成</span>';
+      return '<span style="color:var(--note)">— 未上报</span>';
+    };
     const detRows = [];
     days.slice().reverse().forEach((x) => {
       const dm = x.details || {};
@@ -1255,18 +1262,19 @@
         (Array.isArray(dm[k]) ? dm[k] : []).forEach((it) => {
           it = it || {};
           detRows.push({ k: k, t: it.t || '', p: it.p || '',
-            when: it.at ? fmtT(it.at) : String(x.date || '') });
+            when: it.at ? fmtT(it.at) : String(x.date || ''), r: it.r });
         });
       });
     });
     detRows.sort((x, y) => (y.when > x.when ? 1 : -1));
     html += '<p class="sub-h" style="margin-top:14px">使用明细（近 14 天，每一条记录）</p>';
     html += detRows.length
-      ? table(['时间', '功能', '标题', '平台'], detRows.map((r) => '<tr>'
+      ? table(['时间', '功能', '标题', '平台', '状态'], detRows.map((r) => '<tr>'
         + '<td class="real">' + esc(r.when || '—') + '</td>'
         + '<td>' + esc(RES_LABEL[r.k] || r.k) + '</td>'
         + '<td>' + esc(r.t || '—') + '</td>'
-        + '<td>' + esc(r.p || '—') + '</td></tr>'), '')
+        + '<td>' + esc(r.p || '—') + '</td>'
+        + '<td>' + statTd(r.r) + '</td></tr>'), '')
       : '<p class="empty">没有逐条明细（旧数据只存了汇总次数）。</p>';
     html += '<p class="sub-h" style="margin-top:14px">设备（' + devs.length + '）</p>';
     html += devs.length
