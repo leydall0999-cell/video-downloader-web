@@ -31,6 +31,67 @@ from pathlib import Path
 PROFILE = "/opt/vdl-worker/bili_profile"
 _TRIGGER_VIDEO = "https://www.bilibili.com/video/BV1gtgE6AEmZ"
 
+# 纯缓存目录：只存 HTTP/媒体/GPU 缓存，删了不影响登录态。
+# 登录态在 Cookies / Local Storage / IndexedDB / Login Data，均不在此列，绝不可删。
+_CACHE_DIRS = (
+    "Default/Cache",
+    "Default/Code Cache",
+    "Default/GPUCache",
+    "Default/DawnWebGPUCache",
+    "Default/DawnGraphiteCache",
+    "Default/Service Worker/CacheStorage",
+    "Default/Service Worker/ScriptCache",
+)
+
+
+def _profile_in_use() -> bool:
+    """是否有其它进程正持有本 profile（含卡死残留的 Chromium）。
+
+    读 /proc/*/cmdline 判断；非 Linux（如本机跑单测）一律视为未占用。
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return False
+    me = str(os.getpid())
+    try:
+        for d in proc.iterdir():
+            if not d.name.isdigit() or d.name == me:
+                continue
+            try:
+                cl = (d / "cmdline").read_bytes()
+            except OSError:
+                continue
+            if PROFILE.encode() in cl:
+                return True
+    except OSError:
+        return True  # 读不到就保守放弃清理
+    return False
+
+
+def _clear_profile_caches() -> int:
+    """启动前清空 Chromium 纯缓存目录，返回删除的文件数。
+
+    为什么必须清：`--disk-cache-size` 只在**长期运行**的浏览器里靠定期 trim 生效，
+    短命会话（每次采集十几秒）来不及回收。采集循环每 5 分钟一轮、每轮写 ~2.5MB
+    页面/媒体缓存 ⇒ 实测 24h 涨回 716MB（2026-11-06），与 11-05 整机 iowait 雪崩
+    同源。缓存对「导出 Cookie」零价值，故每轮启动前直接清空。
+    """
+    if _profile_in_use():
+        return 0
+    n = 0
+    for rel in _CACHE_DIRS:
+        p = Path(PROFILE) / rel
+        if not p.is_dir():
+            continue
+        for f in p.rglob("*"):
+            if f.is_file():
+                try:
+                    f.unlink()
+                    n += 1
+                except OSError:
+                    pass
+    return n
+
 
 def _need_playwright():
     try:
@@ -47,6 +108,9 @@ def launch(sessdata: str = ""):
     from playwright.sync_api import sync_playwright
 
     Path(PROFILE).mkdir(parents=True, exist_ok=True)
+    # 每轮启动前清空纯缓存（登录态不动）：短命会话不会触发 Chromium 的缓存回收，
+    # 不清则 5 分钟一轮会把 Cache 涨到 700MB+/天。
+    _clear_profile_caches()
     pw = sync_playwright().start()
     context = pw.chromium.launch_persistent_context(
         user_data_dir=PROFILE,

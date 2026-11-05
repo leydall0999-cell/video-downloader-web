@@ -153,6 +153,32 @@ _must(any(c[0] == "error" for c in kill_calls),
 _must(sum(1 for c in kill_calls if c[0] == "kill") >= 1,
       "_kill_all_chromium 仍执行 os.kill(SIGKILL)")
 
+print("\n=== 5. 采集前必须清空纯缓存（短命会话不会触发 Chromium 缓存回收）===")
+_clear = _find_func(btree, "_clear_profile_caches")
+_must(_clear is not None, "bilibili_ecs_cookie.py 定义 _clear_profile_caches()")
+_clear_calls = _calls(_clear)
+_must(any(c[0] == "_profile_in_use" for c in _clear_calls),
+      "_clear_profile_caches 先用 _profile_in_use 判占用（防删运行中浏览器的缓存）")
+
+# launch() 必须在启动浏览器之前调用清理
+launch_calls = [c[0] for c in _calls(launch)]
+_must("_clear_profile_caches" in launch_calls,
+      "launch() 启动前调用 _clear_profile_caches（否则 Cache 每天涨 ~700MB）")
+
+# 清理清单绝不能包含登录态目录/文件
+cache_dirs = []
+for node in ast.walk(btree):
+    if isinstance(node, ast.Assign):
+        for t in node.targets:
+            if isinstance(t, ast.Name) and t.id == "_CACHE_DIRS" \
+                    and isinstance(node.value, (ast.List, ast.Tuple)):
+                cache_dirs = [e.value for e in node.value.elts
+                              if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+_must(bool(cache_dirs), "_CACHE_DIRS 以字面量列出待清缓存目录")
+_banned = ("Cookies", "Local Storage", "IndexedDB", "Login Data", "Web Data", "Network")
+_hit = [d for d in cache_dirs if any(b.lower() in d.lower() for b in _banned)]
+_must(not _hit, "清理清单不含登录态数据（命中：%s）" % (_hit or "无"))
+
 print("")
 if FAILS:
     print("❌ test_cookie_daemon_chromium_guard 失败 %d 项：" % len(FAILS))
