@@ -369,6 +369,12 @@ run_one test_platform_health_alerts.py
 #  「解析服务正忙」（详见 test_cookie_daemon_chromium_guard.py 头）。
 run_one test_cookie_daemon_chromium_guard.py
 
+#  持久 profile 缓存「容量闸」守卫（2026-11-07）：只删 48h 前文件不够 —— 短命会话
+#  一天就能写出上百 MB（weibo_profile 实测 103MB、bili_profile 曾 768MB/24h），
+#  等不到超龄就把 1.6GB 小机器拖成 iowait 雪崩。必须按 cap 削峰且不误伤登录态
+#  （详见 test_profile_cache_cap.py 头）。
+run_one test_profile_cache_cap.py
+
 echo ""
 echo "========================================="
 echo "  通过: $PASS   失败: $FAIL"

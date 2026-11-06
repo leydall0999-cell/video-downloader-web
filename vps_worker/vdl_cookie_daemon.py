@@ -355,65 +355,128 @@ def _kill_all_chromium():
                      "会持续吃磁盘）：%s", len(survivors), states[:500])
 
 
-def _prune_profile_caches(max_age_hours: float = 48.0) -> int:
+_CACHE_SUBDIRS = (
+    "Default/Cache", "Default/Code Cache", "Default/GPUCache",
+    "Default/DawnWebGPUCache", "Default/DawnGraphiteCache",
+    "Default/Service Worker/CacheStorage", "Default/Service Worker/ScriptCache",
+)
+
+# 单 profile 缓存上限 / 削峰水位（MB）。Chromium 纯缓存对解析零价值，
+# 超限即削，防止 1.6GB 小机器被磁盘 I/O 拖成 11-05 那种 iowait 雪崩。
+CACHE_CAP_MB = 60.0
+CACHE_TRIM_TO_MB = 30.0
+# 最近 10 分钟写入的文件不动：可能正被运行中的会话使用。
+CACHE_FRESH_SEC = 600.0
+
+
+def _prune_profile_caches(max_age_hours: float = 48.0,
+                          cap_mb: float = CACHE_CAP_MB,
+                          trim_to_mb: float = CACHE_TRIM_TO_MB,
+                          fresh_sec: float = CACHE_FRESH_SEC,
+                          root=None) -> int:
     """清理各 Playwright profile 目录下的 Chromium 缓存（保留登录态数据）。
 
     背景：bili_profile 等持久 profile 是「登录态持久化」设计（删了要重新扫码），
     但其中 Default/Cache、Code Cache、GPUCache 等纯缓存目录会无限膨胀
     （实测 bili_profile 1.1G 里 1004M 是 Cache）。这里只删缓存目录，
-    不动 Cookies/IndexedDB/Local Storage 等登录态数据；超时超过 max_age_hours
-    的文件才删（避免删到正在运行的浏览器刚写的新缓存）。
+    不动 Cookies/IndexedDB/Local Storage 等登录态数据。
+
+    两道闸（2026-11-07 补第二道）：
+      1) 超龄：mtime 超过 ``max_age_hours`` 的文件直接删；
+      2) 超量：单个 profile 缓存总量 > ``cap_mb`` 时，按 mtime 从旧到新删到
+         ``trim_to_mb`` 水位。**只靠第一道不够** —— 短命会话一天就能写出
+         上百 MB（实测 weibo_profile 103MB、bili_profile 曾 768MB/24h），
+         这些文件都在 48h 内，等不到超龄就已经把磁盘 I/O 拖垮。
+      两道都跳过最近 ``fresh_sec`` 秒内写入的文件，避免干扰正在跑的会话。
     """
-    import shutil
-    root = Path(__file__).resolve().parent
+    root = Path(root) if root is not None else Path(__file__).resolve().parent
+    now = time.time()
     n = 0
     freed = 0
     try:
-        for prof in root.glob("*_profile"):
-            if not prof.is_dir():
-                continue
-            for cache_dir in ("Default/Cache", "Default/Code Cache", "Default/GPUCache",
-                              "Default/DawnWebGPUCache", "Default/Service Worker/CacheStorage",
-                              "Default/Service Worker/ScriptCache"):
-                p = prof / cache_dir
-                if not p.exists():
-                    continue
-                # 只删 48h 前写入的缓存文件；目录本身保留
-                try:
-                    for f in p.rglob("*"):
-                        if f.is_file():
-                            try:
-                                if time.time() - f.stat().st_mtime > max_age_hours * 3600:
-                                    sz = f.stat().st_size
-                                    f.unlink(missing_ok=True)
-                                    freed += sz
-                                    n += 1
-                            except OSError:
-                                pass
-                    # 清完后把空的深层目录也清掉
-                    for d in sorted(p.rglob("*"), key=lambda x: -len(str(x))):
-                        if d.is_dir() and not any(d.iterdir()):
-                            try:
-                                d.rmdir()
-                            except OSError:
-                                pass
-                except Exception:
-                    pass
+        profiles = [p for p in root.glob("*_profile") if p.is_dir()]
     except Exception:
-        pass
+        return 0
+    for prof in profiles:
+        # 先收集该 profile 全部缓存文件（size, mtime, path）
+        entries = []
+        for cache_dir in _CACHE_SUBDIRS:
+            p = prof / cache_dir
+            if not p.exists():
+                continue
+            try:
+                for f in p.rglob("*"):
+                    if not f.is_file():
+                        continue
+                    try:
+                        st = f.stat()
+                    except OSError:
+                        continue
+                    entries.append((st.st_size, st.st_mtime, f))
+            except Exception:
+                continue
+        if not entries:
+            continue
+        # 闸 1：超龄
+        keep = []
+        for sz, mt, f in entries:
+            if now - mt > max_age_hours * 3600:
+                try:
+                    f.unlink(missing_ok=True)
+                    freed += sz
+                    n += 1
+                    continue
+                except OSError:
+                    pass
+            keep.append((sz, mt, f))
+        # 闸 2：超量（按 mtime 从旧到新削）
+        total = sum(e[0] for e in keep)
+        if total > cap_mb * 1024 * 1024:
+            target = trim_to_mb * 1024 * 1024
+            for sz, mt, f in sorted(keep, key=lambda e: e[1]):
+                if total <= target:
+                    break
+                if now - mt <= fresh_sec:
+                    continue
+                try:
+                    f.unlink(missing_ok=True)
+                    total -= sz
+                    freed += sz
+                    n += 1
+                except OSError:
+                    pass
+        # 清空后回收空的深层目录（目录本身保留，Chromium 会自建）
+        for cache_dir in _CACHE_SUBDIRS:
+            p = prof / cache_dir
+            if not p.is_dir():
+                continue
+            try:
+                for d in sorted(p.rglob("*"), key=lambda x: -len(str(x))):
+                    if d.is_dir() and not any(d.iterdir()):
+                        try:
+                            d.rmdir()
+                        except OSError:
+                            pass
+            except Exception:
+                pass
     if n:
-        logger.info("[prune] profile caches: removed %s files, freed %s MB", n, int(freed / 1024 / 1024))
+        logger.info("[prune] profile caches: removed %s files, freed %s MB",
+                    n, int(freed / 1024 / 1024))
     return n
 
 
 def _prune_loop():
-    """每 12 小时清一次 profile 缓存；启动先跑一次。"""
+    """每小时清一次 profile 缓存；启动先跑一次。
+
+    12h 太久：短命会话一轮就能写出几十 MB，等下一轮前磁盘已在高位。
+    每小时只是 walk 一遍缓存目录（毫秒级），成本可忽略。
+    """
     while True:
         try:
             _prune_profile_caches()
         except Exception:
             pass
-        time.sleep(12 * 3600)
+        time.sleep(3600)
 
 
 def do_resolve(platform, url, cookie=""):
