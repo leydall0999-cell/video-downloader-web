@@ -116,49 +116,61 @@ def launch(sessdata: str = ""):
     # 不清则 5 分钟一轮会把 Cache 涨到 700MB+/天。
     _clear_profile_caches()
     pw = sync_playwright().start()
-    context = pw.chromium.launch_persistent_context(
-        user_data_dir=PROFILE,
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            # 🔴 限制磁盘缓存：本 profile 的唯一价值是**登录态**（Cookies / Local
-            # Storage），HTTP/媒体缓存是纯浪费。1.6GB 内存机上该缓存曾膨胀到
-            # 739MB（profile 共 767MB），每次收集都要在磁盘缓存上反复换页，
-            # 直接表现就是渲染器卡在 D 状态、读盘 60MB/s、整机 iowait 90%
-            # （2026-11-05 事故）。限制后缓存不再增长，收集稳定在几十秒内完成。
-            "--disk-cache-size=10485760",
-            "--media-cache-size=10485760",
-        ],
-        # 🔴 必须显式剔除 Playwright 的默认开关 --disable-dev-shm-usage：
-        # 它会把 Chromium 共享内存从 /dev/shm（本机 805MB tmpfs，实测 0% 占用）
-        # 改放到 /tmp 所在的**系统盘**。1.6GB 小内存机上内存压力一上来，渲染器就
-        # 反复换入换出这些磁盘 shm 文件，形成 50MB/s 级读盘死循环，进程卡在 D 状态
-        # 连 SIGKILL 都杀不掉（2026-11-05 实测持续 12min、整机 iowait 90%、load 12、
-        # 期间用户解析全被判「解析服务正忙」）。
-        # 注意：只从 args 里去掉没用 —— 该参数在 playwright driver 的默认开关表里
-        # （coreBundle.js chromiumSwitches），必须走 ignore_default_args 才真正生效。
-        ignore_default_args=["--disable-dev-shm-usage"],
-        user_agent=(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        ),
-        viewport={"width": 1280, "height": 800},
-        locale="zh-CN",
-    )
-    context.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
-    if sessdata:
-        page = context.new_page()
-        page.goto("https://www.bilibili.com/", wait_until="domcontentloaded", timeout=30000)
-        context.add_cookies([{
-            "name": "SESSDATA",
-            "value": sessdata,
-            "domain": ".bilibili.com",
-            "path": "/",
-        }])
-        page.close()
+    # 🔴 start() 成功之后任何一步抛错都必须 stop()：playwright driver 是一个独立的
+    # node 子进程（run-driver，11 线程），不 stop 就永久滞留。vdl-cookie 的
+    # TasksMax=64，5 个滞留 driver（55 线程）就把 cgroup 打满，之后每轮采集都在
+    # sync_playwright().start() 处 BlockingIOError(Errno 11) 而彻底停摆
+    # （2026-11-09 实测连续 11 小时采集全失败）。
+    try:
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=PROFILE,
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                # 🔴 限制磁盘缓存：本 profile 的唯一价值是**登录态**（Cookies / Local
+                # Storage），HTTP/媒体缓存是纯浪费。1.6GB 内存机上该缓存曾膨胀到
+                # 739MB（profile 共 767MB），每次收集都要在磁盘缓存上反复换页，
+                # 直接表现就是渲染器卡在 D 状态、读盘 60MB/s、整机 iowait 90%
+                # （2026-11-05 事故）。限制后缓存不再增长，收集稳定在几十秒内完成。
+                "--disk-cache-size=10485760",
+                "--media-cache-size=10485760",
+            ],
+            # 🔴 必须显式剔除 Playwright 的默认开关 --disable-dev-shm-usage：
+            # 它会把 Chromium 共享内存从 /dev/shm（本机 805MB tmpfs，实测 0% 占用）
+            # 改放到 /tmp 所在的**系统盘**。1.6GB 小内存机上内存压力一上来，渲染器就
+            # 反复换入换出这些磁盘 shm 文件，形成 50MB/s 级读盘死循环，进程卡在 D 状态
+            # 连 SIGKILL 都杀不掉（2026-11-05 实测持续 12min、整机 iowait 90%、load 12、
+            # 期间用户解析全被判「解析服务正忙」）。
+            # 注意：只从 args 里去掉没用 —— 该参数在 playwright driver 的默认开关表里
+            # （coreBundle.js chromiumSwitches），必须走 ignore_default_args 才真正生效。
+            ignore_default_args=["--disable-dev-shm-usage"],
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            locale="zh-CN",
+        )
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        if sessdata:
+            page = context.new_page()
+            page.goto("https://www.bilibili.com/", wait_until="domcontentloaded", timeout=30000)
+            context.add_cookies([{
+                "name": "SESSDATA",
+                "value": sessdata,
+                "domain": ".bilibili.com",
+                "path": "/",
+            }])
+            page.close()
+    except BaseException:
+        try:
+            pw.stop()
+        except Exception:
+            pass
+        raise
     return pw, context
 
 

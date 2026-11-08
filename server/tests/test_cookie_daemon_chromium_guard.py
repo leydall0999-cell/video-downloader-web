@@ -188,6 +188,39 @@ _banned = ("Cookies", "Local Storage", "IndexedDB", "Login Data", "Web Data", "N
 _hit = [d for d in cache_dirs if any(b.lower() in d.lower() for b in _banned)]
 _must(not _hit, "清理清单不含登录态数据（命中：%s）" % (_hit or "无"))
 
+print("\n=== 6. 清理必须连带回收 Playwright driver（只杀 chromium 会打满 pids 配额）===")
+# 2026-11-09 事故：_kill_all_chromium 只按 comm 匹配 "chrom"，driver（node
+# run-driver，11 线程/个）每轮滞留，5 个即打满 TasksMax=64，此后
+# sync_playwright().start() 全部 BlockingIOError，采集停摆 11 小时。
+_must(any(c[0] == "_kill_playwright_drivers" for c in kill_calls),
+      "_kill_all_chromium 内部调用 _kill_playwright_drivers（否则 driver 滞留吃满 pids）")
+_must(_find_func(dtree, "_playwright_driver_pids") is not None,
+      "vdl_cookie_daemon.py 提供 _playwright_driver_pids()")
+_drv = _find_func(dtree, "_playwright_driver_pids")
+_drv_calls = _calls(_drv)
+_must(any(c[0] == "run" for c in _drv_calls),
+      "_playwright_driver_pids 通过 ps 枚举进程（comm 是 node，不能按 chrom 匹配）")
+
+print("\n=== 7. 采集前必须有 pids 预检（濒临上限先回收 driver 自愈）===")
+_must(_find_func(dtree, "_cgroup_pids_usage") is not None,
+      "vdl_cookie_daemon.py 提供 _cgroup_pids_usage()")
+_must(any(c[0] == "_cgroup_pids_usage" for c in calls),
+      "_collect_and_cache 启动前读 cgroup pids 占用")
+_must(any(c[0] == "_kill_playwright_drivers" for c in calls),
+      "_collect_and_cache 在 pids 紧张时回收 driver")
+
+print("\n=== 8. launch() 失败必须 stop() driver（否则每轮泄漏一个 node 子进程）===")
+# start() 成功之后的任何异常都要 pw.stop()，否则 driver 滞留。
+_stops_on_error = False
+for node in ast.walk(launch):
+    if isinstance(node, ast.Try) and node.handlers:
+        for stmt in node.handlers:
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                        and sub.func.attr == "stop":
+                    _stops_on_error = True
+_must(_stops_on_error, "launch() 在 except 分支调用 pw.stop()")
+
 print("")
 if FAILS:
     print("❌ test_cookie_daemon_chromium_guard 失败 %d 项：" % len(FAILS))

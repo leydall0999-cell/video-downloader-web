@@ -216,6 +216,14 @@ def _collect_and_cache():
             logger.info("[collect] 解析占用中，跳过本轮收集（120s 后重试）")
             return None
     try:
+        # pids 预检（自愈）：driver/chromium 滞留会把 cgroup 的 pids 配额吃满，
+        # 之后 sync_playwright().start() 直接 BlockingIOError，采集静默停摆。
+        # 超过 80% 就先回收滞留 driver，把配额让出来再启动本轮。
+        usage = _cgroup_pids_usage()
+        if usage and usage[1] and usage[0] >= usage[1] * 0.8:
+            n = _kill_playwright_drivers()
+            logger.warning("[collect] pids 濒临上限 %s/%s，已回收滞留 driver %d 个",
+                           usage[0], usage[1], n)
         # 硬超时兜底：见 COLLECT_TIMEOUT 注释。线程无法强杀，但必须保证
         # ①锁一定释放（否则用户解析被饿死）②卡死的 chromium 被 SIGKILL。
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -301,6 +309,76 @@ def do_push(wait: bool = True):
         _push_lock.release()
 
 
+# Playwright driver（node run-driver）的 cmdline 特征。每个 driver 常驻 11 个线程。
+_DRIVER_MARKERS = ("playwright/driver", "run-driver")
+
+
+def _playwright_driver_pids():
+    """列出滞留的 Playwright driver（node ... cli.js run-driver）进程。
+
+    🔴 2026-11-09 事故：`_kill_all_chromium` 只按 comm 匹配 "chrom"，而 driver 的
+    comm 是 node/MainThread，于是每轮收集超时后 chromium 被杀、driver 却活着。
+    5 轮即 5 个 driver（55 线程）打满 vdl-cookie 的 TasksMax=64，此后每轮
+    `sync_playwright().start()` 都 BlockingIOError(Errno 11)，B站 Cookie 采集
+    连续 11 小时 100% 失败，而日志只有一行「收集失败」，极易被当成平台问题。
+    """
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "pid=,stat=,args="],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:  # noqa: BLE001
+        return []
+    pids = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3:
+            continue
+        if not all(m in parts[2] for m in _DRIVER_MARKERS):
+            continue
+        # Z=zombie：已死等父进程回收，不需要也不能再杀。
+        if parts[1].startswith("Z"):
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid > 0 and pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def _cgroup_pids_usage():
+    """返回本进程所在 cgroup 的 (pids.current, pids.max)；不可读时 None。
+
+    vdl-cookie 的 TasksMax=64，pids 打满后 subprocess/fork 全部
+    BlockingIOError，表现为「浏览器类平台解析 400 + 采集每轮必败」。
+    """
+    try:
+        rel = ""
+        for line in Path("/proc/self/cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                rel = line[3:]
+                break
+        base = Path("/sys/fs/cgroup") / rel.lstrip("/")
+        cur = int((base / "pids.current").read_text().strip())
+        mx = (base / "pids.max").read_text().strip()
+        return cur, (int(mx) if mx.isdigit() else 0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _kill_playwright_drivers():
+    """回收滞留的 Playwright driver，返回杀掉的数量。"""
+    pids = _playwright_driver_pids()
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return len(pids)
+
+
 def _kill_all_chromium():
     """清掉所有残留 chrome-headless 进程（Playwright 的 browser.close() 偶发漏杀，
     1.6GB 小内存 VPS 上孤儿 chromium 会拖慢后续解析甚至导致 Railway 90s 超时）。
@@ -310,6 +388,9 @@ def _kill_all_chromium():
     2026-11-05 事故就是孤儿渲染器卡在 D 状态反复读磁盘 shm（51MB/s）达 12min，
     杀不掉又不断拖垮整机。这里杀完必须复核，把「杀不死的」显式记 ERROR，
     否则下次同类问题只表现为「网站变慢」，无从定位。
+
+    🔴 同时回收 Playwright driver（node run-driver）：只杀 chromium 不够，
+    driver 会滞留并吃满 cgroup 的 pids 配额（2026-11-09 采集停摆 11 小时）。
     """
     def _chromium_pids():
         try:
@@ -336,6 +417,12 @@ def _kill_all_chromium():
                 pids.append(pid)
         return pids
 
+    # 先杀 driver 再杀浏览器：driver 死了 chromium 也会被连带回收，避免
+    # driver 活着重新拉起浏览器（只杀 chromium 时发生过）。
+    n_drv = _kill_playwright_drivers()
+    if n_drv:
+        logger.warning("[chromium] 回收滞留 Playwright driver %d 个（每个占 11 线程，"
+                       "累积会打满 cgroup pids 配额）", n_drv)
     for pid in _chromium_pids():
         try:
             os.kill(pid, signal.SIGKILL)
