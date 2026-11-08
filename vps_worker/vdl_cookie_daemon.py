@@ -368,6 +368,11 @@ def _cgroup_pids_usage():
         return None
 
 
+# 一次 Chromium 采集实测所需的 task 数下限（实测峰值 81，留足余量取 200）。
+# TasksMax 低于此值时 chromium 在 new_page 处 Target crashed，采集静默停摆。
+PIDS_MIN_RECOMMENDED = 200
+
+
 def _kill_playwright_drivers():
     """回收滞留的 Playwright driver，返回杀掉的数量。"""
     pids = _playwright_driver_pids()
@@ -735,7 +740,31 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _report_pids_budget():
+    """启动即核对 cgroup 的 pids 配额，不足就显式报错。
+
+    一次 Chromium 采集实测占 **81 个 task**（浏览器 30+ / 渲染器 15+ / GPU 10+ /
+    playwright driver 11 / python 8）。TasksMax 低于此值时 chromium 在
+    `new_page` 处直接抛 `Target crashed`，日志只有一行「收集失败」，看起来像
+    平台故障 —— 2026-11-09 就是 TasksMax=64 让 B站 Cookie 采集静默停摆 11 小时，
+    连带浏览器类平台（爱奇艺/快手/微博/央视频）在巡检里被判 needs_manual。
+    """
+    usage = _cgroup_pids_usage()
+    if not usage:
+        logger.info("[pids] 无法读取 cgroup pids 配额，跳过核对")
+        return
+    cur, mx = usage
+    if mx and mx < PIDS_MIN_RECOMMENDED:
+        logger.error(
+            "[pids] TasksMax=%s 偏低（当前 %s 个）。一次 Chromium 采集需 ~81 个 task，"
+            "配额不足会导致 new_page 抛 Target crashed 并静默停摆。"
+            "修复：systemctl set-property vdl-cookie.service TasksMax=256", mx, cur)
+    else:
+        logger.info("[pids] cgroup 配额正常 %s/%s", cur, mx or "unlimited")
+
+
 def main():
+    _report_pids_budget()
     t = threading.Thread(target=_loop, daemon=True, name="cookie-loop")
     t.start()
     # profile 缓存清理（12h 周期）：防持久 profile 的 Chromium 缓存无限膨胀撑爆 VPS 磁盘

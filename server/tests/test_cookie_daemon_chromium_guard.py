@@ -221,6 +221,20 @@ for node in ast.walk(launch):
                     _stops_on_error = True
 _must(_stops_on_error, "launch() 在 except 分支调用 pw.stop()")
 
+print("\n=== 9. 启动即核对 pids 配额（TasksMax 过小会让 chromium Target crashed）===")
+# 2026-11-09 事故真正的主因：调优把 vdl-cookie 的 TasksMax 设成 64，而一次采集
+# 实测要 81 个 task ⇒ new_page 直接 Target crashed，采集静默停摆 11 小时。
+_must(_find_func(dtree, "_report_pids_budget") is not None,
+      "vdl_cookie_daemon.py 提供 _report_pids_budget()")
+main_fn = _find_func(dtree, "main")
+_must(main_fn is not None and any(c[0] == "_report_pids_budget" for c in _calls(main_fn)),
+      "main() 启动时调用 _report_pids_budget（配额不足要 ERROR 可见）")
+_thr = [n.value for n in ast.walk(dtree) if isinstance(n, ast.Assign)
+        for t in n.targets if isinstance(t, ast.Name) and t.id == "PIDS_MIN_RECOMMENDED"
+        for n in [n.value] if isinstance(n, ast.Constant) and isinstance(n.value, int)]
+_must(bool(_thr) and _thr[0] >= 128,
+      "PIDS_MIN_RECOMMENDED 至少 128（实测单次采集峰值 81 个 task）")
+
 print("")
 if FAILS:
     print("❌ test_cookie_daemon_chromium_guard 失败 %d 项：" % len(FAILS))
