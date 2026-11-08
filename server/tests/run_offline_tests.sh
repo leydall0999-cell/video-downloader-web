@@ -103,6 +103,7 @@ run_one test_cookie_verify_inherit.py      # Cookie 池「未校验」治理：�
 run_one test_cookie_share_host_map.py      # 分享域/极速版域→主站登录域：chenzhongtech→kuaishou、iesdouyin→douyin、b23.tv→bilibili，含「主站不得被误映射」与 B站 CDN 回归（2026-10-21 极速版只带 did/didv）
 run_one test_admin_roles.py             # 后台权限拆两级：超管唯一（名单首项/最早注册兜底）、其余 is_admin 一律 admin（2026-10-22 自桌面端同口径移植）
 run_one test_admin_roles_api.py         # 路由层闸门：admin.py 11 写 + admin_cookies 3 写全用 require_super、读接口仍 require_admin、CSRF 兜底不丢、超管不可被降级
+run_one test_admin_bgm.py              # 云端背景音乐曲库：文件名重生成/魔数/体积上限/清单原子写/路径穿越/写闸门静态扫描（2026-11-08）
 run_one test_admin_roles_e2e.py         # 真 HTTP：超管写 200 / 管理员写 403（不是 401）/ 普通用户 401 / 超管可取消他人管理员但取消不了自己
 run_one test_admin_promote_effect.py   # 提权「点了没反应」的根因：手机号账号的标识解析必须命中（否则云端同步被跳过 + 云端权威回写把本机打回）＋权限文案两级口径（2026-10-22）
 run_one test_cookie_verify_cooldown.py     # 联网验真冷却：全量 6h/手动 10min 内不重复打平台（云端机房 IP 高频探同一 session 会被风控踢下线，2026-10-21 快手）

@@ -233,13 +233,17 @@ def assert_ui_state_only(fname: str, route: str, expect_file: str) -> list[str]:
 w1, r1, bw1, br1 = scan("admin.py")
 ok(f"admin.py：写接口 {w1} 个全部有闸门（1 条纯 UI 状态见 _UI_STATE_ROUTES）", not bw1, str(bw1))
 ok(f"admin.py：只读接口 {r1} 个仍用 require_admin（管理员能看）", not br1, str(br1))
-ok("admin.py 写接口数与改造基线一致（新增写接口请同步本基线）", w1 == 14, w1)
+ok("admin.py 写接口数与改造基线一致（新增写接口请同步本基线）", w1 == 16, w1)
 # 基线 11 → 13（2026-11-03 同步）：2026-11-01 后台改造新增两条写路由
 #   · /api/admin/login           —— 登录入口本身（匿名，见 _PUBLIC_ROUTES）
 #   · /api/admin/config/free-quota —— 免费额度下发（require_super_backend）
 # 基线 13 → 14（2026-11-04 同步）：11-03 晚「巡检异常提醒」新增
 #   · /api/admin/platform-health/ack —— 只改提醒文件 ack 标记（require_admin，
 #     见 _UI_STATE_ROUTES；其「不得写业务数据」由 _assert_ui_state_only 钉死）
+# 基线 14 → 16（2026-11-08 同步）：云端背景音乐曲库新增两条写路由
+#   · /api/admin/bgm/upload —— 超管上传曲目（require_super_backend）
+#   · /api/admin/bgm/delete —— 超管删除曲目（require_super_backend）
+#   闸门强弱 / 闸门排在写盘之前由 test_admin_bgm.py【6】逐条钉死。
 
 for _route in _UI_STATE_ROUTES:
     _bad = assert_ui_state_only("admin.py", _route, "platform_health_alerts.json")

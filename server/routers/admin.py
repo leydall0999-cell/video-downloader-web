@@ -1038,3 +1038,235 @@ def _validate_free_trial(trial_in: dict[str, Any], known_ops: dict) -> dict[str,
         else:  # pragma: no cover — 上面已经过一遍键名白名单
             out[k] = v
     return out
+
+
+# --------------------------------------------------------------------------- #
+# 云端背景音乐曲库（2026-11-08）
+# --------------------------------------------------------------------------- #
+# 曲子由超级管理员在后台上传，落盘到 web/bgm/（StaticFiles 根下的子目录），
+# 公网可经 https://hanyuxz.top/bgm/<file> 直连；library.json 是给桌面端
+# 「在线曲库 → 按需下载到本机」用的公开清单（不含任何鉴权数据）。
+#
+# 🔴 为什么不用扫码分享那套上传：/su 存的是带 TTL 的临时短链文件，曲库要长期
+#    稳定、要被清单索引、还要能被桌面端按 sha256 校验完整性。
+# 🔴 为什么重生成文件名：原始文件名可能带中文 / 空格 / ../，直接拼进静态路径
+#    既是路径穿越面，又会让桌面端下载后落盘出现编码问题。一律 16 位 hex。
+# 🔴 写接口一律 require_super_backend：只认 /admin/login 签发的 2h adm 令牌 +
+#    超管；前台 30 天普通会话改不了云端曲库（与改价同级别）。
+
+import hashlib as _bgm_hashlib
+import json as _bgm_json
+import os as _bgm_os
+import re as _bgm_re
+import threading as _bgm_threading
+import time as _bgm_time
+import uuid as _bgm_uuid
+from pathlib import Path as _BgmPath
+
+BGM_BASE_URL = "https://hanyuxz.top/bgm/"
+BGM_MAX_BYTES = 30 * 1024 * 1024
+BGM_ALLOWED_EXTS = (".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg")
+_BGM_ID_RE = _bgm_re.compile(r"^[0-9a-f]{16}$")
+_BGM_LOCK = _bgm_threading.Lock()
+
+
+def _bgm_dir() -> _BgmPath:
+    """曲库目录 = 静态根 web/bgm。每次调用确保存在（首次上传自动建）。"""
+    import app
+    d = _BgmPath(app.WEB_DIR) / "bgm"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _bgm_library_path() -> _BgmPath:
+    return _bgm_dir() / "library.json"
+
+
+def _bgm_load() -> dict:
+    """读清单；缺文件 / 坏 JSON 一律当空库，绝不让后台页因一个文件打不开。"""
+    try:
+        data = _bgm_json.loads(_bgm_library_path().read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("tracks"), list):
+            return data
+    except Exception:  # noqa: BLE001 — 清单损坏时自愈为空库
+        pass
+    return {"version": 1, "base_url": BGM_BASE_URL, "updated_at": "", "tracks": []}
+
+
+def _bgm_save(data: dict) -> None:
+    """原子写：同目录临时文件 + os.replace，避免桌面端读到半截 JSON。"""
+    p = _bgm_library_path()
+    data["version"] = 1
+    data["base_url"] = BGM_BASE_URL
+    data["updated_at"] = _bgm_time.strftime("%Y-%m-%dT%H:%M:%SZ", _bgm_time.gmtime())
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(_bgm_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _bgm_os.replace(str(tmp), str(p))
+
+
+def _bgm_is_mp3(blob: bytes) -> bool:
+    """mp3 最低限度魔数：ID3v2 标签开头，或 MPEG 帧同步 0xFFEx/0xFFFx。"""
+    if blob[:3] == b"ID3":
+        return True
+    return len(blob) >= 2 and blob[0] == 0xFF and (blob[1] & 0xE0) == 0xE0
+
+
+def _bgm_mp3_duration(blob: bytes) -> Optional[float]:
+    """纯 Python 估算 mp3 时长（零外部依赖）：优先 Xing/Info 帧数，退回 CBR 比特率。
+
+    解析不了返回 None —— 前端显示「—」，不为了一个展示字段拒收合法音频。
+    """
+    try:
+        pos = 0
+        if blob[:3] == b"ID3":
+            sz = blob[6:10]
+            if len(sz) < 4:
+                return None
+            pos = 10 + ((sz[0] & 0x7F) << 21 | (sz[1] & 0x7F) << 14
+                        | (sz[2] & 0x7F) << 7 | (sz[3] & 0x7F))
+            if blob[5] & 0x10:      # ID3v2 footer 标志
+                pos += 10
+        n = len(blob)
+        while pos + 4 <= n:
+            if blob[pos] == 0xFF and (blob[pos + 1] & 0xE0) == 0xE0:
+                break
+            pos += 1
+        if pos + 4 > n:
+            return None
+        h = blob[pos:pos + 4]
+        ver_bits = (h[1] >> 3) & 0x03      # 3=MPEG1 / 2=MPEG2 / 0=MPEG2.5
+        layer_bits = (h[1] >> 1) & 0x03    # 1=Layer III
+        br_idx = (h[2] >> 4) & 0x0F
+        sr_idx = (h[2] >> 2) & 0x03
+        if layer_bits != 1 or br_idx in (0, 15) or sr_idx == 3:
+            return None
+        _BR = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
+        _SR = ((44100, 48000, 32000), (22050, 24000, 16000), (11025, 12000, 8000))
+        mpeg1 = ver_bits == 3
+        bitrate = (_BR[br_idx] if mpeg1 else _BR[br_idx] // 2) * 1000
+        sr = _SR[0 if mpeg1 else (1 if ver_bits == 2 else 2)][sr_idx]
+        if not bitrate or not sr:
+            return None
+        # Xing/Info 头在帧数据内的固定偏移（MPEG1 立体声 32 / 单声道 17；MPEG2 减半）
+        xoff = (32 if mpeg1 else 17) + (0 if (h[3] >> 6) == 3 else 4)
+        x = blob[pos + 4 + xoff: pos + 4 + xoff + 12]
+        if x[:4] in (b"Xing", b"Info"):
+            flags = int.from_bytes(x[4:8], "big")
+            if flags & 0x01:
+                frames = int.from_bytes(x[8:12], "big")
+                if frames > 0:
+                    return round(frames * (1152 if mpeg1 else 576) / sr, 2)
+        return round(max(0, n - pos) * 8 / bitrate, 2)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _bgm_add(blob: bytes, suffix: str, name: str,
+             category: str = "", license_note: str = "") -> dict:
+    """落盘一首曲子并写进清单。路由只做参数校验，业务逻辑放这里便于离线测试。"""
+    if suffix not in BGM_ALLOWED_EXTS:
+        raise ValueError("不支持的音频格式")
+    if not blob:
+        raise ValueError("文件是空的")
+    if len(blob) > BGM_MAX_BYTES:
+        raise ValueError("文件超过 30MB 上限")
+    if suffix == ".mp3" and not _bgm_is_mp3(blob):
+        raise ValueError("这不是有效的 MP3 文件")
+    tid = _bgm_uuid.uuid4().hex[:16]
+    fname = tid + suffix
+    track = {
+        "id": tid,
+        "name": name[:60],
+        "category": category[:30],
+        "file": fname,
+        "size": len(blob),
+        "duration": _bgm_mp3_duration(blob) if suffix == ".mp3" else None,
+        "sha256": _bgm_hashlib.sha256(blob).hexdigest(),
+        "license": license_note[:200],
+        "uploaded_at": _bgm_time.strftime("%Y-%m-%dT%H:%M:%SZ", _bgm_time.gmtime()),
+    }
+    with _BGM_LOCK:
+        d = _bgm_dir()
+        tmp = d / ("." + tid + ".tmp")
+        tmp.write_bytes(blob)
+        _bgm_os.replace(str(tmp), str(d / fname))
+        lib = _bgm_load()
+        lib["tracks"].append(track)
+        _bgm_save(lib)
+    return track
+
+
+def _bgm_remove(tid: str) -> bool:
+    """按 id 删除：id 格式 + 路径归属双重校验，绝不让 ../ 逃出曲库目录。"""
+    if not _BGM_ID_RE.match(tid or ""):
+        return False
+    with _BGM_LOCK:
+        lib = _bgm_load()
+        hit = next((t for t in lib["tracks"] if t.get("id") == tid), None)
+        if not hit:
+            return False
+        d = _bgm_dir().resolve()
+        f = (d / str(hit.get("file") or "")).resolve()
+        if f.parent != d:          # 清单被手改过、file 带路径 ⇒ 拒绝执行
+            return False
+        try:
+            f.unlink()
+        except FileNotFoundError:
+            pass                    # 文件已不在，清单仍要清掉（幂等）
+        lib["tracks"] = [t for t in lib["tracks"] if t.get("id") != tid]
+        _bgm_save(lib)
+    return True
+
+
+@router.get("/api/admin/bgm")
+def admin_bgm_list(request: Request = None) -> dict[str, Any]:
+    """曲库清单（管理员只读可见）。附带每首的直链，后台可直接试听。"""
+    require_admin(request)
+    lib = _bgm_load()
+    tracks = []
+    for t in lib.get("tracks", []):
+        row = dict(t)
+        row["url"] = BGM_BASE_URL + str(t.get("file") or "")
+        tracks.append(row)
+    return {"ok": True, "base_url": BGM_BASE_URL, "total": len(tracks), "tracks": tracks}
+
+
+@router.post("/api/admin/bgm/upload")
+async def admin_bgm_upload(request: Request) -> dict[str, Any]:
+    """上传一首背景音乐（multipart：file / name / category / license）。"""
+    from fastapi import HTTPException
+    require_super_backend(request)
+    try:
+        form = await request.form()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"表单解析失败：{exc}")
+    up = form.get("file")
+    if up is None or not hasattr(up, "read"):
+        raise HTTPException(status_code=400, detail="请选择音频文件")
+    name = str(form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写曲名")
+    category = str(form.get("category") or "").strip()
+    license_note = str(form.get("license") or "").strip()
+    orig = str(getattr(up, "filename", "") or "")
+    suffix = _BgmPath(orig).suffix.lower()
+    if suffix not in BGM_ALLOWED_EXTS:
+        raise HTTPException(status_code=400, detail="只支持 mp3 / m4a / wav / aac / flac / ogg")
+    blob = await up.read()
+    try:
+        track = _bgm_add(blob, suffix, name, category, license_note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    track["url"] = BGM_BASE_URL + track["file"]
+    return {"ok": True, "track": track, "total": len(_bgm_load().get("tracks", []))}
+
+
+@router.post("/api/admin/bgm/delete")
+def admin_bgm_delete(payload: dict[str, Any] = Body(...), request: Request = None) -> dict[str, Any]:
+    """删除一首：清单与磁盘文件一起清掉。"""
+    require_super_backend(request)
+    tid = str(payload.get("id") or "")
+    if not _bgm_remove(tid):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="曲目不存在或 id 非法")
+    return {"ok": True, "total": len(_bgm_load().get("tracks", []))}

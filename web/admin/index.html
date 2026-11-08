@@ -120,6 +120,7 @@
   <button class="tab" data-tab="recon">每日对账</button>
   <button class="tab" data-tab="health">平台健康</button>
   <button class="tab" data-tab="cookies">Cookie 池</button>
+  <button class="tab" data-tab="bgm">背景音乐</button>
 </nav>
 
 <div class="wrap">
@@ -335,6 +336,43 @@
        运维密钥。改成同页 iframe 后，登录态由后台令牌自动带上，不跳转也不再输密钥。 -->
   <section class="panel view" id="opsPanel" data-view="ops" style="padding:0;overflow:hidden">
     <iframe id="opsFrame" title="运维监控" style="width:100%;height:calc(100vh - 150px);min-height:520px;border:0;display:block;background:var(--bg)"></iframe>
+  </section>
+
+  <!-- 云端背景音乐曲库（2026-11-08）：超管上传 → 落盘 web/bgm/ → 公网直连 → 桌面端按需下载 -->
+  <section class="panel view" id="bgmPanel" data-view="bgm">
+    <h2><span class="dot"></span>背景音乐曲库</h2>
+    <p class="note">
+      上传的曲子存放在云端静态目录，可通过 <b>hanyuxz.top/bgm/…</b> 直连访问；
+      桌面端「在线曲库」按 <b>library.json</b> 清单下载到本机后即可用于成片配乐。
+      曲目由你自行上传，请确认拥有相应使用授权。
+    </p>
+    <div class="policy">
+      <div class="row">
+        <label>音频文件 <input type="file" id="bgmFile" accept=".mp3,.m4a,.wav,.aac,.flac,.ogg"></label>
+        <label>曲名 <input id="bgmName" placeholder="例如：温暖午后" maxlength="60" style="width:180px"></label>
+        <label>分类
+          <select id="bgmCategory">
+            <option value="轻柔">轻柔</option>
+            <option value="轻快">轻快</option>
+            <option value="恢弘">恢弘</option>
+            <option value="氛围">氛围</option>
+            <option value="其他">其他</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label style="flex:1;min-width:260px">授权说明（选填）
+          <input id="bgmLicense" placeholder="曲源 / 授权凭证" maxlength="200" style="width:100%;margin-top:6px">
+        </label>
+        <button id="bgmUpload">上传并入库</button>
+        <span class="note" id="bgmHint"></span>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button id="bgmRefresh" class="ghost">重新加载</button>
+      <span class="note" id="bgmMeta"></span>
+    </div>
+    <div id="bgmBox"></div>
   </section>
 
   <section class="panel view" id="reconPanel" data-view="recon">
@@ -877,7 +915,7 @@
   const TAB_TITLE = {
     users: '用户管理', members: '会员管理', stats: '使用统计', config: '系统配置',
     ai: 'AI 计费', health: '平台健康', cookies: 'Cookie 池',
-    ops: '运维监控', recon: '每日对账',
+    ops: '运维监控', recon: '每日对账', bgm: '背景音乐',
   };
   const loadedView = {};   // view -> 是否已拉过数据（懒加载：切过去才拉）
 
@@ -887,10 +925,104 @@
     const map = {
       users: loadUsers, members: loadMembers, stats: loadStats,
       config: loadConfig, cookies: loadCookies, health: loadInsights,
-      recon: loadRecon,
+      recon: loadRecon, bgm: loadBgm,
     };
     if (map[name]) map[name]().catch(() => {});
   }
+
+  // ---------------- 云端背景音乐曲库（2026-11-08）----------------
+  function bgmDur(t) {
+    const d = Number(t && t.duration);
+    if (!isFinite(d) || d <= 0) return '—';
+    return Math.floor(d / 60) + ':' + String(Math.round(d % 60)).padStart(2, '0');
+  }
+  function bgmSize(t) {
+    const n = Number(t && t.size) || 0;
+    return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+      : Math.max(1, Math.round(n / 1024)) + ' KB';
+  }
+  function bgmHint(msg, bad) {
+    const h = $('bgmHint');
+    if (!h) return;
+    h.textContent = msg || '';
+    h.className = 'note' + (bad ? ' err' : '');
+  }
+
+  function renderBgm(tracks) {
+    const box = $('bgmBox');
+    if (!box) return;
+    $('bgmMeta').textContent = '共 ' + tracks.length + ' 首 · 清单 hanyuxz.top/bgm/library.json';
+    const rows = tracks.map((t) => {
+      const url = String(t.url || '');
+      const audio = '<audio controls preload="none" src="' + esc(url)
+        + '" style="height:32px;width:190px"></audio>';
+      const del = '<button class="ghost" data-bgm-del="' + esc(t.id) + '"'
+        + (IS_SUPER ? '' : ' disabled') + '>删除</button>';
+      return '<tr><td><b>' + esc(t.name || '未命名') + '</b><br><span class="note">'
+        + esc(t.category || '其他') + '</span></td>'
+        + '<td>' + audio + '</td>'
+        + '<td>' + bgmDur(t) + '<br><span class="note">' + bgmSize(t) + '</span></td>'
+        + '<td><span class="note">' + esc(String(t.license || '').slice(0, 40)) + '</span></td>'
+        + '<td><span class="note">' + esc(String(t.uploaded_at || '').slice(0, 10)) + '</span></td>'
+        + '<td>' + del + '</td></tr>';
+    });
+    box.innerHTML = table(['曲名 / 分类', '试听', '时长 / 大小', '授权说明', '上传日期', '操作'],
+      rows, '曲库还是空的：在上方选一首音频、填好曲名，点「上传并入库」。');
+    box.querySelectorAll('[data-bgm-del]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const id = b.dataset.bgmDel;
+        const t = tracks.find((x) => x.id === id);
+        const yes = await confirmDanger('删除背景音乐', [
+          '将从云端曲库和 library.json 清单中永久移除「' + (t ? t.name : id) + '」。',
+          '已下载到用户本机的副本不受影响，但桌面端不再能下载这首。'
+        ], '删除');
+        if (!yes) return;
+        try {
+          await api('/api/admin/bgm/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          });
+          toast('已删除');
+          loadedView.bgm = false; ensureView('bgm');
+        } catch (e) { toast('删除失败：' + e.message, 3200); }
+      });
+    });
+  }
+
+  async function loadBgm() {
+    const d = await api('/api/admin/bgm');
+    renderBgm(d.tracks || []);
+  }
+
+  function bindBgm() {
+    const up = $('bgmUpload'), fl = $('bgmFile');
+    if (!up || !fl) return;
+    up.addEventListener('click', async () => {
+      if (!IS_SUPER) { toast('仅超级管理员可上传（当前为管理员·只读）'); return; }
+      const f = fl.files && fl.files[0];
+      if (!f) { bgmHint('请先选择音频文件', true); return; }
+      const name = ($('bgmName').value || '').trim();
+      if (!name) { bgmHint('请填写曲名', true); return; }
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      fd.append('name', name);
+      fd.append('category', $('bgmCategory').value || '其他');
+      fd.append('license', ($('bgmLicense').value || '').trim());
+      up.disabled = true;
+      bgmHint('上传中…');
+      try {
+        const d = await api('/api/admin/bgm/upload', { method: 'POST', body: fd });
+        bgmHint('已入库：' + (d.track ? d.track.name : name));
+        fl.value = ''; $('bgmName').value = ''; $('bgmLicense').value = '';
+        loadedView.bgm = false; ensureView('bgm');
+      } catch (e) {
+        bgmHint('上传失败：' + e.message, true);
+      } finally { up.disabled = false; }
+    });
+    const rf = $('bgmRefresh');
+    if (rf) rf.addEventListener('click', () => { loadedView.bgm = false; ensureView('bgm'); });
+  }
+  bindBgm();
 
   function showTab(name) {
     if (!TAB_TITLE[name]) return;
