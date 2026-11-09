@@ -110,6 +110,19 @@
   body.embed header { padding:10px 24px 0; border-bottom:none; gap:8px; }
   body.embed .kpis { padding-top:8px; }
   body.embed .wrap { padding-top:12px; }
+  /* 自动刷新状态条：与时间范围 chips 同一行，内嵌后台时靠右。
+     只重拉数据接口、不重载 iframe —— 用户展开的卡片和正在编辑的公告不会被打断。 */
+  .autobar { display:flex; align-items:center; gap:8px; margin-left:auto; font-size:12px; color:var(--muted); white-space:nowrap; }
+  .autobar label { display:flex; align-items:center; gap:5px; cursor:pointer; }
+  .autobar input[type=checkbox] { accent-color:var(--accent); margin:0; }
+  .autobar select { background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:8px; padding:5px 8px; font-size:12px; outline:none; }
+  .autobar select:focus { border-color:var(--accent); }
+  .autobar button { padding:5px 10px; font-size:12px; }
+  .auto-dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
+  .auto-dot.on { background:var(--green); box-shadow:0 0 0 3px rgba(66,211,146,.15); }
+  .auto-dot.err { background:var(--red); box-shadow:0 0 0 3px rgba(255,107,107,.15); }
+  .auto-status { font-variant-numeric:tabular-nums; min-width:158px; text-align:right; }
+  @media (max-width:760px){ .autobar { flex-wrap:wrap; margin-left:0; } .auto-status { min-width:0; } }
 </style>
 </head>
 <body>
@@ -120,6 +133,18 @@
     <button class="chip" data-range="3d">近 3 天</button>
     <button class="chip" data-range="week">近 7 天</button>
     <button class="chip" data-range="month">近 30 天</button>
+  </div>
+  <div class="autobar" id="autoBar">
+    <span class="auto-dot off" id="autoDot"></span>
+    <label title="按右侧间隔自动重拉数据，不重载页面"><input type="checkbox" id="autoOn" checked> 自动刷新</label>
+    <select id="autoEvery" title="自动刷新间隔">
+      <option value="30">每 30 秒</option>
+      <option value="60" selected>每 1 分钟</option>
+      <option value="180">每 3 分钟</option>
+      <option value="300">每 5 分钟</option>
+    </select>
+    <span class="auto-status" id="autoStatus">尚未刷新</span>
+    <button class="ghost" id="autoNow" title="立即重拉一次数据">立即刷新</button>
   </div>
   <div class="keybox">
     <input id="key" type="password" placeholder="运维密钥 (X-Admin-Key)" autocomplete="off">
@@ -294,12 +319,61 @@ document.querySelectorAll('#rangeBar .chip').forEach(b=>{
   };
 });
 
-async function load(){
+// ── 自动刷新（2026-11-09）───────────────────────────────────────────────────
+// 后端 /api/admin/visits 是「15 秒结果缓存 + 全局锁」：一次刷新要扫轮转日志、
+// 还连打 6 个接口。所以默认 60 秒、可选 30s~5min，绝不能用秒级轮询把 GIL 打满。
+// 自动刷新只重拉数据、不重载 iframe：用户展开的卡片和正在编辑的公告都不会被打断。
+const AUTO_ON_KEY = 'vdl_ops_auto_on', AUTO_SEC_KEY = 'vdl_ops_auto_sec';
+const AUTO_SEC_CHOICES = [30, 60, 180, 300];
+let AUTO_ON = localStorage.getItem(AUTO_ON_KEY) !== '0';   // 默认开启
+let AUTO_SEC = Number(localStorage.getItem(AUTO_SEC_KEY)) || 60;
+if(!AUTO_SEC_CHOICES.includes(AUTO_SEC)) AUTO_SEC = 60;
+let _loading = false, _lastOk = 0, _loadErr = '', _nextAt = 0, _autoTimer = null;
+
+function fmtClock(ms){ const d=new Date(ms); return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; }
+function pageVisible(){
+  if(document.hidden) return false;
+  // 内嵌在后台 iframe 里：切到别的页签时 iframe 被父页 display:none，
+  // 此时 document.hidden 不一定跟着变，用 iframe 自身的尺寸判断更准（省掉无谓请求）。
+  try {
+    const f = window.frameElement;
+    if(f){ const r = f.getBoundingClientRect(); if(!r.width || !r.height) return false; }
+  } catch(e){ /* 跨域按可见处理 */ }
+  return true;
+}
+function paintAuto(){
+  const dot = $('autoDot'), st = $('autoStatus');
+  if(!dot || !st) return;
+  dot.className = 'auto-dot' + (!AUTO_ON ? ' off' : (_loadErr ? ' err' : ' on'));
+  if(!AUTO_ON){ st.textContent = '已关闭 · 可点「立即刷新」'; return; }
+  const left = Math.max(0, Math.ceil((_nextAt - Date.now())/1000));
+  st.textContent = (_lastOk ? `上次 ${fmtClock(_lastOk)} · ` : '') + `${left}s 后刷新`;
+}
+function schedule(){
+  _nextAt = Date.now() + AUTO_SEC*1000;
+  clearTimeout(_autoTimer);
+  _autoTimer = setTimeout(()=>{ if(AUTO_ON && pageVisible()) refreshAuto(); else schedule(); }, AUTO_SEC*1000);
+  paintAuto();
+}
+async function refreshAuto(){
+  if(_loading) { schedule(); return; }
+  await load({silent:true});
+  schedule();
+}
+
+// opts.silent = 自动刷新：不弹 toast、失败也不吵（只把状态点变红），避免挂着后台一直弹。
+async function load(opts){
+  const o = opts || {};
+  if(_loading) return;              // 上一轮没回来就跳过，绝不并发堆日志扫描
+  _loading = true;
   const key = $('key').value.trim() || getKey();
   // 内嵌模式且手里有后台令牌时，密钥不再是必要条件（请求头会被换成 Bearer）；
   // 连令牌都没有时也别急着退出 —— 本机直连场景服务端本就免密钥，
   // 试一次再报错，比让人对着空页面猜要强。
-  if(!key && !ADMIN_TOKEN && !EMBED){ toast('请先输入运维密钥', true); return; }
+  if(!key && !ADMIN_TOKEN && !EMBED){
+    if(!o.silent) toast('请先输入运维密钥', true);
+    _loading = false; return;
+  }
   if(key){ setKey(key); $('key').value = key; }
   try {
     const [v, e] = await Promise.all([
@@ -312,11 +386,17 @@ async function load(){
     renderEvents(e);
     loadWebStats(key);        // 独立加载：失败只影响该面板，不牵连上面两块
     loadResolveDemand(key);   // 解析需求榜：同样独立，失败不牵连
-    loadNotice(key);          // 会员公告：独立加载，失败不影响其它面板
+    loadNotice(key);          // 会员公告：有未保存草稿时自动跳过覆盖（见 loadNotice）
     loadPlatforms(key);       // 端分布：走授权中心，与 nginx 口径互补，同样独立
-    toast('已刷新');
+    _lastOk = Date.now(); _loadErr = '';
+    if(!o.silent) toast('已刷新');
   } catch(err){
-    toast('加载失败：' + err.message + '（密钥错误？）', true);
+    _loadErr = err.message;
+    if(!o.silent) toast('加载失败：' + err.message + '（密钥错误？）', true);
+  } finally {
+    _loading = false;
+    paintAuto();
+    if(!o.silent) schedule();   // 手动刷新/切范围后重新计时，避免刚刷完又立刻自动刷
   }
 }
 
@@ -366,8 +446,11 @@ function renderPlatforms(d){
     $('platHint').textContent = '';
     return;
   }
+  // 🔴 自动刷新会周期性重绘本卡片：直接收起会让用户展开的账号清单每 60 秒消失一次。
+  // 记住当前展开的端，用刚拉到的新数据重新展开（PLAT_DATA 下面会更新）。
+  const _keepPlat = window.PLAT_CUR || null;
   window.PLAT_DATA = d;          // 点卡片展开账号时用
-  window.PLAT_CUR = null;        // 重渲染后收起，避免展示过期数据
+  window.PLAT_CUR = null;
   $('platAccounts').innerHTML = '';
   const P = {};
   (d.platforms||[]).forEach(x=>{ P[x.platform] = x; });
@@ -418,6 +501,9 @@ function renderPlatforms(d){
       <td class="path" title="${esc(r.email)}">${esc(r.email)}</td>
       <td class="num">${ago(r.last_seen)}</td></tr>`).join('')
     || '<tr><td colspan="5" class="empty">无</td></tr>';
+
+  // 恢复用户展开的那一端（showPlatAccounts 会读新的 PLAT_DATA）
+  if(_keepPlat){ window.PLAT_CUR = null; showPlatAccounts(_keepPlat); }
 }
 
 // 点端分布卡片 → 展开/收起这一端的账号清单（数据已在 platforms[].accounts 里，无需再请求）
@@ -542,6 +628,17 @@ function renderEvents(e){
   const st = e.stats || {};
   const total = st.total || (e.count || 0);
   const groups = e.groups || [];
+  // 自动刷新重绘会收起用户手动展开的错误分组、并把滚动位置弹回顶部。
+  // 用分组标题（归并键）记住已展开的集合，重绘后原样恢复。
+  // 用 .msg 的 title（=原始 message）作键：textContent 在「无详情」分组里带额外前缀，不能当键。
+  const _openMsgs = new Set(
+    Array.from(document.querySelectorAll('#evtGroups details.grp[open]'))
+      .map(d => { const m = d.querySelector('.msg'); return m ? (m.getAttribute('title') || '').trim() : ''; })
+      .filter(Boolean)
+  );
+  const _scrollY = window.scrollY;
+  const _evtBox = $('evtGroups');
+  const _evtScroll = _evtBox ? _evtBox.scrollTop : 0;
   $('evtRangeHint').textContent = `${e.range_label || ''} · ${num(total)} 条 / ${num(groups.length)} 类`;
 
   // 概览：按端、按类型，而不是只甩一个总数
@@ -566,7 +663,9 @@ function renderEvents(e){
     const span = g.first_ts && g.last_ts && g.first_ts !== g.last_ts
       ? `${fmtTs(g.first_ts)} → ${fmtTs(g.last_ts)}`
       : fmtTs(g.last_ts);
-    return `<details class="grp"${gi === 0 ? ' open' : ''}>
+    // 首次渲染默认展开第一条；之后按用户实际展开状态恢复（自动刷新不打断阅读）
+    const _open = _openMsgs.size ? _openMsgs.has(String(g.message || '').trim()) : gi === 0;
+    return `<details class="grp"${_open ? ' open' : ''}>
       <summary>
         <span class="cnt">×${num(g.count)}</span>
         <span class="msg" title="${esc(g.message)}">${isOpaque ? '<span style="color:var(--amber)">无详情</span> ' : ''}${esc(g.message)}</span>
@@ -584,6 +683,9 @@ function renderEvents(e){
       </div>
     </details>`;
   }).join('');
+  // innerHTML 重绘不改变页面滚动位置，但保险起见恢复一次（iframe 内滚动条归自身管）
+  if(_scrollY && window.scrollY !== _scrollY) window.scrollTo(0, _scrollY);
+  if(_evtBox) _evtBox.scrollTop = _evtScroll;
 }
 
 function catName(c){
@@ -666,15 +768,28 @@ async function loadResolveDemand(key){
   }
 }
 // 会员公告：写授权中心（经 worker 的管理端点）。空内容 = 关闭公告栏。
-async function loadNotice(key){
+// 🔴 自动刷新会周期性调到这里；若用户正在写公告，直接覆盖输入框会把草稿冲掉。
+// 用「上次从服务端载入的基线」判定有没有未保存修改：有草稿就保留、不覆盖；
+// force=true（用户主动点「重新加载」/ 保存成功后）才强制刷新并重置基线。
+window.NOTICE_BASE = null;
+async function loadNotice(key, force){
   try {
     const r = await fetch('/api/admin/member-notice', { headers: { 'X-Admin-Key': key } });
     const d = await r.json();
     if (!d.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
     const n = d.notice || {};
-    $('noticeText').value = n.text || '';
-    $('noticeEnabled').checked = n.enabled !== false;
-    $('noticeMeta').textContent = n.enabled ? '当前：已启用' : '当前：未启用（会员中心不显示）';
+    const text = n.text || '', enabled = n.enabled !== false;
+    const t = $('noticeText'), c = $('noticeEnabled');
+    const dirty = window.NOTICE_BASE &&
+      (t.value !== window.NOTICE_BASE.text || c.checked !== window.NOTICE_BASE.enabled);
+    if(!force && dirty){
+      $('noticeMeta').textContent = '有未保存修改，已保留草稿（点「重新加载」可放弃）';
+      return;
+    }
+    t.value = text;
+    c.checked = enabled;
+    window.NOTICE_BASE = { text, enabled };
+    $('noticeMeta').textContent = enabled ? '当前：已启用' : '当前：未启用（会员中心不显示）';
   } catch(e){
     $('noticeMeta').textContent = '加载失败：' + e.message;
   }
@@ -691,17 +806,41 @@ async function saveNotice(key){
       body: JSON.stringify({ enabled, text }),
     });
     const d = await r.json();
-    if (d.ok){ toast('已下发，所有用户可见'); loadNotice(key); }
+    if (d.ok){ toast('已下发，所有用户可见'); loadNotice(key, true); }
     else toast('保存失败：' + (d.error || (d.cloud && d.cloud.reason) || '未知原因'), true);
   } catch(e){
     toast('保存失败：' + e.message, true);
   }
 }
 $('noticeSave').onclick = ()=> saveNotice(getKey() || $('key').value.trim());
-$('noticeReload').onclick = ()=> loadNotice(getKey() || $('key').value.trim());
+$('noticeReload').onclick = ()=> loadNotice(getKey() || $('key').value.trim(), true);
 $('load').onclick = load;
 $('clear').onclick = ()=>{ setKey(''); $('key').value=''; toast('已清除本地密钥'); };
 paintRange();
+
+// ── 自动刷新控件接线 ───────────────────────────────────────────────────────
+$('autoOn').checked = AUTO_ON;
+$('autoEvery').value = String(AUTO_SEC);
+$('autoOn').onchange = ()=>{
+  AUTO_ON = $('autoOn').checked;
+  localStorage.setItem(AUTO_ON_KEY, AUTO_ON ? '1' : '0');
+  if(AUTO_ON) refreshAuto(); else paintAuto();   // 打开时立刻刷一次，别让人干等一轮
+};
+$('autoEvery').onchange = ()=>{
+  AUTO_SEC = Number($('autoEvery').value) || 60;
+  if(!AUTO_SEC_CHOICES.includes(AUTO_SEC)) AUTO_SEC = 60;
+  localStorage.setItem(AUTO_SEC_KEY, String(AUTO_SEC));
+  if(AUTO_ON) refreshAuto(); else paintAuto();
+};
+$('autoNow').onclick = ()=>{ if(AUTO_ON) refreshAuto(); else load(); };
+// 切回后台页签 / 标签页时，若已过了一轮就立刻补刷，不用再等下一个整点。
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden && AUTO_ON && pageVisible() && Date.now() - _lastOk >= AUTO_SEC*1000) refreshAuto();
+});
+// 倒计时每秒走一格（只更新文字，不触发任何请求）
+setInterval(paintAuto, 1000);
+schedule();
+
 // 内嵌进来时直接拉数据（人已经在后台登录过了，不该再点一次「刷新」）。
 // 没拿到后台令牌也照拉一次：本机直连场景服务端免密钥；公网会返回 403，页面自己提示。
 if(EMBED){ load(); }
