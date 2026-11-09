@@ -141,7 +141,7 @@ _INSTALLER_FILES: dict[str, Path] = {
                       or "/opt/vdl-update/VideoDownloader.app.zip"),
     # 2026-10-30 恢复：R2 探测不达时的本机回退（安全网，保证 CF 侧异常也下得到）
     "windows": Path(os.environ.get("VDL_INSTALLER_WINDOWS")
-                    or "/opt/vdl-update/VideoDownloader-Setup-1.1.08.exe"),
+                    or "/opt/vdl-update/VideoDownloader-Setup-1.1.10.exe"),
 }
 
 # 🔴 2026-10-18：Windows 安装包暂时不可用（用户反馈装上后跑不起来），先把该平台
@@ -168,7 +168,7 @@ _R2_INSTALLER_URLS: dict[str, str] = {
     "macos-zip": os.environ.get("VDL_R2_INSTALLER_MACOS_ZIP")
                  or "https://download.hanyuxz.top/VideoDownloader.app.zip",
     "windows": os.environ.get("VDL_R2_INSTALLER_WINDOWS")
-               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.1.08.exe",
+               or "https://download.hanyuxz.top/VideoDownloader-Setup-1.1.10.exe",
 }
 
 # 安装包媒体类型按扩展名取（DMG≠ZIP≠EXE，写死 zip 会让浏览器把 dmg 也当 zip 处理）。
@@ -195,12 +195,15 @@ _INSTALLER_META_CACHE: dict = {"ts": 0.0, "payload": {}}
 # 权威发布清单（publish_update.sh 每次发版都会写 latest.json），并做**绑定校验**：
 # 只有安装包与这次发布对得上（体积/日期）才标版本，绝不凭空标一个可能撒谎的号。
 _LATEST_JSON_PATH = os.environ.get("VDL_RELEASE_LATEST") or "/opt/vdl-update/latest.json"
+# Windows 用独立清单（与客户端 _manifest_name 对齐），体积精确匹配才认版本
+_LATEST_WIN_JSON_PATH = (os.environ.get("VDL_RELEASE_LATEST_WIN")
+                         or "/opt/vdl-update/latest-win.json")
 
 
-def _read_release_info() -> dict:
+def _read_release_info(path: str = "") -> dict:
     """读本机发版清单；取不到就返回 {}（体积/日期照旧，版本留空）。"""
     try:
-        with open(_LATEST_JSON_PATH, "r", encoding="utf-8") as f:
+        with open(path or _LATEST_JSON_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict) and str(data.get("version") or "").strip():
             return data
@@ -267,8 +270,16 @@ def download_meta() -> dict:
             platforms[plat] = _head_installer(url)
             # 🔴 Windows 有独立清单 latest-win.json，不能拿 mac 的 latest.json 绑版本
             #    （2026-10-30 实测：会把 mac 的 v1.1.05 标到 Windows 包上，而实际是
-            #    1.1.06）。这里对 windows 跳过绑定，页面如实显示「安装包更新于 X 日」。
-            if plat != "windows":
+            #    1.1.06）。2026-11-09 起改为读 latest-win.json，并用「R2 上的体积 ==
+            #    清单 size」做判据：不一致就留空，绝不给包标错版本号。
+            if plat == "windows":
+                win_rel = _read_release_info(_LATEST_WIN_JSON_PATH)
+                want = win_rel.get("size")
+                ver = str(win_rel.get("version") or "").strip()
+                if ver and isinstance(want, int) and want > 0 \
+                        and platforms[plat].get("size") == want:
+                    platforms[plat]["version"] = ver
+            else:
                 _bind_release_version(platforms[plat], rel, plat)
         except Exception:  # noqa: BLE001 — 取不到就留空，页面回退静态文案
             platforms[plat] = {"size": 0, "updated": "", "version": ""}
