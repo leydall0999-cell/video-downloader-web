@@ -328,7 +328,7 @@ const AUTO_SEC_CHOICES = [30, 60, 180, 300];
 let AUTO_ON = localStorage.getItem(AUTO_ON_KEY) !== '0';   // 默认开启
 let AUTO_SEC = Number(localStorage.getItem(AUTO_SEC_KEY)) || 60;
 if(!AUTO_SEC_CHOICES.includes(AUTO_SEC)) AUTO_SEC = 60;
-let _loading = false, _lastOk = 0, _loadErr = '', _nextAt = 0, _autoTimer = null;
+let _loading = false, _lastOk = 0, _loadErr = '', _nextAt = 0;
 
 function fmtClock(ms){ const d=new Date(ms); return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; }
 function pageVisible(){
@@ -349,14 +349,20 @@ function paintAuto(){
   const left = Math.max(0, Math.ceil((_nextAt - Date.now())/1000));
   st.textContent = (_lastOk ? `上次 ${fmtClock(_lastOk)} · ` : '') + `${left}s 后刷新`;
 }
+// 每秒 tick 一次决定要不要刷（不是一次 setTimeout 定死）：
+//  · 页面不可见（后台切到别的页签）时**不刷也不重置计时**，切回来下一秒立刻补刷；
+//  · 用 setTimeout 递归的话，不可见那轮会被白白吃掉，用户切回来还得干等一整轮。
 function schedule(){
   _nextAt = Date.now() + AUTO_SEC*1000;
-  clearTimeout(_autoTimer);
-  _autoTimer = setTimeout(()=>{ if(AUTO_ON && pageVisible()) refreshAuto(); else schedule(); }, AUTO_SEC*1000);
   paintAuto();
 }
+function tick(){
+  paintAuto();
+  if(!AUTO_ON || _loading || !pageVisible() || Date.now() < _nextAt) return;
+  refreshAuto();
+}
 async function refreshAuto(){
-  if(_loading) { schedule(); return; }
+  if(_loading) return;
   await load({silent:true});
   schedule();
 }
@@ -833,12 +839,12 @@ $('autoEvery').onchange = ()=>{
   if(AUTO_ON) refreshAuto(); else paintAuto();
 };
 $('autoNow').onclick = ()=>{ if(AUTO_ON) refreshAuto(); else load(); };
-// 切回后台页签 / 标签页时，若已过了一轮就立刻补刷，不用再等下一个整点。
+// 切回浏览器标签页时立刻补刷（不用等下一秒 tick）；后台内切页签由 tick 自己处理。
 document.addEventListener('visibilitychange', ()=>{
-  if(!document.hidden && AUTO_ON && pageVisible() && Date.now() - _lastOk >= AUTO_SEC*1000) refreshAuto();
+  if(!document.hidden && AUTO_ON && pageVisible() && Date.now() >= _nextAt) refreshAuto();
 });
-// 倒计时每秒走一格（只更新文字，不触发任何请求）
-setInterval(paintAuto, 1000);
+// 倒计时每秒走一格 + 到点判定（只有 tick 决定请求，paintAuto 只改文字）
+setInterval(tick, 1000);
 schedule();
 
 // 内嵌进来时直接拉数据（人已经在后台登录过了，不该再点一次「刷新」）。
