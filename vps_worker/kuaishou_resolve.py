@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""ECS（VPS）上用 Playwright 真实浏览器解析快手视频，提取真实视频流 URL。
+"""ECS（VPS）上用 Playwright 真实浏览器解析快手作品，提取真实视频流 URL。
 
 背景：快手 2024 后改全客户端渲染（CSR）+ GraphQL + kwpsec 反爬，SSR 的
 window.__APOLLO_STATE__ 在无「设备指纹 Cookie」时是空的（did/kpf/kwpsec 等），
 纯 requests/curl 拿不到主视频数据。但真实浏览器首次访问会建立设备指纹 Cookie，
 二次访问后 __APOLLO_STATE__ 里就有完整视频数据（photoH265Url/photoH264Url 直链）。
 
-本脚本用无头 Chromium 打开快手视频页（游客态、无需登录），提取：
+本脚本用无头 Chromium 打开快手作品页（游客态、无需登录），提取：
   - 标题（caption 剥离话题标签；纯话题视频用「作者昵称：首个话题」）
   - 作者昵称（uploader）
   - 封面图（photoUrl）
   - 真实视频流 URL（kwaicdn.com 的合并 mp4，音视频已合并、无需 ffmpeg 再合）
   - 时长 / 视频 ID
 
-短链 v.kuaishou.com/xxx 会被浏览器自动 302 展开。
+短链 v.kuaishou.com/xxx 会被浏览器自动 302 展开为 H5 浏览页
+（v.m.chenzhongtech.com/fw/photo/<id>?...&subBiz=BROWSE_SLIDE_PHOTO）。
+⚠️ BROWSE_SLIDE_PHOTO 是 H5 浏览页的业务线标识，视频分享链接也带它——
+绝不据此判作品类型；视频一律「先提流，H5 页拿不到就切桌面详情页再试」。
 
 对外暴露 resolve(url) 供守护进程 vdl_cookie_daemon.py 复用。
 """
@@ -27,14 +30,21 @@ PROFILE = "/opt/vdl-worker/kuaishou_profile"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
-_PHOTOID_RE = re.compile(r"/short-video/([\w-]+)|/f/([\w-]+)|v\.kuaishou\.com/([\w-]+)")
+_PHOTOID_RE = re.compile(
+    r"/short-video/([\w-]+)|/fw/photo/([\w-]+)|/photo/([\w-]+)"
+    r"|photoId=([\w-]+)|/f/([\w-]+)|v\.kuaishou\.com/([\w-]+)")
 _TAG_RE = re.compile(r"#[\w\u4e00-\u9fa5·]+")
 _AT_RE = re.compile(r"@[\w\u4e00-\u9fa5]+(?:\([^)]*\))?")
 
 
 def _pick_video_id(url: str) -> str:
     m = _PHOTOID_RE.search(url)
-    return (m.group(1) or m.group(2) or m.group(3) or "") if m else ""
+    if not m:
+        return ""
+    for g in m.groups():
+        if g:
+            return g
+    return ""
 
 
 def _extract_meta(page) -> tuple[str, str, str]:
@@ -72,6 +82,27 @@ def _extract_meta(page) -> tuple[str, str, str]:
         except Exception:
             author = ""
     return caption, author, thumb
+
+
+def _looks_like_album(page) -> bool:
+    """从 APOLLO_STATE 判断是否真·图集/图文作品。
+
+    ⚠️ 只认数据，不认 URL：快手分享短链展开后统一带 `subBiz=BROWSE_SLIDE_PHOTO`，
+    视频分享链接也带它，绝不能作为图集判据。只有页面数据里真出现 atlas / imageData /
+    multiImage / imageList 等图集结构，才确认是图集。
+    """
+    try:
+        flag = page.evaluate(
+            "() => { const st = window.__APOLLO_STATE__ || {}; let hit = false;"
+            " const walk = (o, d) => { if (d > 22 || o == null || hit) return;"
+            "  if (typeof o === 'object') for (const [k, v] of Object.entries(o)) {"
+            "   if (/atlas|imageData|multiImage|imageList|albumPhoto|worksImage/i.test(k))"
+            "     { hit = true; return; } walk(v, d + 1); } };"
+            " walk(st, 0); return hit; }"
+        )
+        return bool(flag)
+    except Exception:
+        return False
 
 
 def _poll_streams(page, seconds: float) -> list:
@@ -137,35 +168,59 @@ def resolve(url, timeout=35):
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-            # 图集 / 幻灯片作品（2026-10-28 实测）：短链展开后 final URL 带
-            # `subBiz=BROWSE_SLIDE_PHOTO`，页面只有 HLS 幻灯片流（vod-rt-remux/
-            # hls-ts/*.m3u8），**没有** progressive mp4 直链。此前一律走下面 25s
-            # 轮询 → 必然超时 → 抛「APOLLO_STATE 无 mp4 直链」，用户白等 30s 且
-            # 报错看不懂。这里按 URL 判据立即失败，给可读原因。
-            # 正常视频的 final URL 是 /short-video/<id>，不带 subBiz 参数。
-            if "BROWSE_SLIDE_PHOTO" in (page.url or ""):
-                raise RuntimeError(
-                    "这是快手图集/图文作品，只有幻灯片播放流，没有可下载的视频直链"
-                )
+            # ⚠️ 2026-11-10 关键修正（视频分享链接被误判图集）：
+            # 快手分享短链（v.kuaishou.com/xxx）展开后统一落 H5 浏览页
+            # v.m.chenzhongtech.com/fw/photo/<id>?...&subBiz=BROWSE_SLIDE_PHOTO ——
+            # 该参数是 H5 浏览页的业务线标识，**视频分享链接也带它**，不是作品类型。
+            # 旧逻辑一见到 BROWSE_SLIDE_PHOTO 就立刻抛「图集」，导致大量视频分享链接
+            # 被误杀（用户报障：视频链接提示「图集/图文作品」）。
+            # 新逻辑：先尽力提取视频流（H5 页 → 桌面详情页 → reload 退化）；流拿不到时
+            # 也**绝不**凭 URL 参数判图集——只有页面数据里真挖到图集结构（atlas 等）
+            # 才提示「图集」；其余（含风控/captcha 拦截导致数据全空）一律给诚实的
+            # 「解析失败」，避免误导用户以为自己是图集。
+            first_url = page.url or ""
+            photo_id = _pick_video_id(first_url) or _pick_video_id(url)
 
-            # 轮询等 __APOLLO_STATE__ 里出现 mp4 直链（首访建 cookie 可能较慢）
-            mp4s = _poll_streams(page, 8)
+            # ① 当前页先短轮询（H5 浏览页偶尔能直接给出播放流）
+            mp4s = _poll_streams(page, 5)
+
+            # ② H5 浏览页是 SSR 壳：图集作品根本不请数据，视频作品的 H5 播放器也常
+            #    为空。有 photoId 且当前不是桌面详情页时，切桌面详情页（成熟路径）再试。
+            if not mp4s and photo_id and "/short-video/" not in first_url:
+                page.goto(
+                    "https://www.kuaishou.com/short-video/" + photo_id,
+                    wait_until="domcontentloaded", timeout=30000,
+                )
+                mp4s = _poll_streams(page, 8)
+
             if not mp4s:
                 # 2026-10-30 实测（冷 profile 复现）：设备指纹 Cookie 缺失/过期时，
                 # 首访页面的 <video> 存在但 src 为空、__APOLLO_STATE__ 里零 kwaicdn，
-                # 且该 SPA **不会**自己重取数据 —— 只靠单页 25s 轮询必然超时（用户
-                # 白等 30s 后拿到「无 mp4 直链」）。二次访问带着首访建立的
-                # did/kpf/kwpsec 等指纹 Cookie 才会返回完整数据，实测 reload 后
-                # 1.5s 内即出直链。故改为「短轮询 → reload → 再轮询」。
+                # 且该 SPA **不会**自己重取数据 —— 只靠单页轮询必然超时。二次访问带
+                # 首访建立的 did/kpf/kwpsec 等指纹 Cookie 才返回数据，reload 后
+                # 1.5s 内即出直链。故 reload 后再轮询。
                 page.reload(wait_until="domcontentloaded", timeout=30000)
-                if "BROWSE_SLIDE_PHOTO" in (page.url or ""):
-                    raise RuntimeError(
-                        "这是快手图集/图文作品，只有幻灯片播放流，没有可下载的视频直链"
-                    )
                 mp4s = _poll_streams(page, 12)
 
             if not mp4s:
-                raise RuntimeError("未解析到快手视频流（APOLLO_STATE 无 mp4 直链）")
+                # 流确实没拿到。区分三种情况，给诚实文案，**绝不凭 URL 参数误判图集**：
+                #  ① 真图集：APOLLO_STATE 挖到 atlas/imageData 等图集结构 → 提示图集
+                #     （网页版不支持，引导桌面版）；
+                #  ② 作品页已加载但无视频流 → 提取失败，提示重试；
+                #  ③ 页面数据全空（风控/captcha/IP 被拦，APOLLO_STATE 零内容）→ 诚实
+                #     「解析失败」，而不是误导用户「这是图集」。
+                caption, author, _ = _extract_meta(page)
+                if _looks_like_album(page):
+                    raise RuntimeError(
+                        "这是快手图集/图文作品，网页版暂不支持下载，请用桌面版 App"
+                    )
+                if caption or author:
+                    raise RuntimeError(
+                        "快手视频流提取失败（作品页已加载但无可用直链），请稍后重试"
+                    )
+                raise RuntimeError(
+                    "快手解析失败：页面数据未加载，可能被风控拦截；请稍后重试或用桌面版 App"
+                )
 
             # 选流策略：video 标签 src（播放器实际加载的真实流）最高优先；
             # 无 video src 时退到 APOLLO_STATE 里 hd 最高清的直链（hd15 > hd1）。
