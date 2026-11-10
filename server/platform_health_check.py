@@ -154,8 +154,9 @@ def _resolve(url: str) -> tuple[bool, str, str]:
         return False, str(d.get("category") or "unknown"), _msg
     if isinstance(d, dict) and d.get("detail"):
         return False, "http_error", str(d.get("detail"))[:200]
-    if isinstance(d, dict) and (d.get("url") or d.get("title") or d.get("formats")):
-        return True, "ok", str(d.get("title") or "")[:80]
+    _title = d.get("title") or (d.get("video") or {}).get("title") or ""
+    if isinstance(d, dict) and (d.get("url") or _title or d.get("formats")):
+        return True, "ok", str(_title)[:80]
     return False, "no_payload", body[:160]
 
 
