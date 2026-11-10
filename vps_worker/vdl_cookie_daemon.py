@@ -581,21 +581,9 @@ def do_resolve(platform, url, cookie=""):
     resolver = _RESOLVERS.get(platform)
     if resolver is None:
         return False, "不支持的平台: %s" % platform
-    # 抖音快路：a_bogus 签名纯 HTTP 直连（免 Chromium、不占 _resolve_lock，
-    # 实测 ~0.7s/条 vs Playwright 20s+）。签名被抖音风控升级打掉或链接
-    # 非视频页时才回落 Playwright 浏览器方案，快路失败对用户透明。
-    if platform == "douyin":
-        try:
-            # 优先用云端池里的有效抖音登录态（突破 Argus 第一层：登录态缺失）；
-            # 缺失/失效时传 None，回落游客态（原行为）。注意 Argus 还有第二层 UIFID
-            # 设备指纹校验，仅靠登录态不足以完全突破，详见运维记录。
-            cookie = _pool_douyin_cookie()
-            return True, douyin_direct.resolve(url, cookie_header=cookie)
-        except (douyin_direct.VideoNotFoundError, douyin_direct.ArgusBlockedError) as e:
-            # 确定性结论（视频不存在 / Argus 风控拦截）：回落浏览器也是同样结果
-            return False, str(e)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[douyin-direct] 直连失败，回落 Playwright: %s", str(e)[:150])
+    # 抖音：不走 a_bogus 纯 HTTP 直连（2026-11-10 实测被 Argus 确定性拦截，死路）；
+    # 直接落 _RESOLVERS["douyin"]=douyin_resolve 的 **游客态** 真实浏览器解析
+    # （cookies=None，绝不用登录态注入——UIFID 不匹配必被 Argus 拦）。
     if not _resolve_lock.acquire(blocking=False):
         # 上一轮 Chromium 还在跑：最多等 8s（避免并发请求无限排队 + 线程堆积
         # 撑爆小内存 VPS；等不到就返回「解析忙」让 Railway 端给用户可读提示）

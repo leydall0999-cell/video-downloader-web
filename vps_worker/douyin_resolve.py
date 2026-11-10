@@ -189,7 +189,7 @@ def resolve(url, timeout=30, cookies=None):
 
             page.on("response", _on_resp)
 
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
 
             # 轮询：滚动 + 触发播放，挑真实视频流（douyinvod.com，排除静态占位）
             chosen = None

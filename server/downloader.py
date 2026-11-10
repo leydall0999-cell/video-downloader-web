@@ -2234,11 +2234,14 @@ _DOUYIN_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
-# 🔴 2026-11-03：网页版抖音 = 停用 → 明确引导到桌面版（见 _douyin_info 文档）。
-# worker 侧的破 Argus 尝试（纯 HTTP 直连 / Playwright 注入登录态）在服务器上
-# 都是确定性失败：前者卡 Uifid Not Found，后者页面只剩空壳 streams=0。
-# 留着这条开关：将来若 worker 能破，改 True 即恢复，不用改逻辑。
-_DOUYIN_WEB_VIA_WORKER = False
+# 2026-11-10：网页版抖音 = **已打通** → 走 VPS worker 的 guest Playwright 真实浏览器解析。
+# 实测结论（推翻 11-03 旧判）：a_bogus 纯 HTTP 直连（douyin_direct）无论游客/带登录态
+#   都被 Argus 确定性拦截（死路）；但 **游客态** 真实浏览器（douyin_resolve, cookies=None）
+#   反而能拿到真实流（2/2 公开视频成功）。关键：服务器侧**绝不能用登录态注入**
+#   （注入的 sessionid 与浏览器当场生成的 UIFID 不匹配 ⇒ 反而被 Argus 拦）。
+# 西瓜 ixigua.com 复用同一通道（_DOUYIN_HOSTS 已含，URL 归一化到 douyin.com/video/ID）。
+# 局限：仅**公开**视频；私密/关注/付费仍需登录（服务器侧暂无解，桌面 CDP 同理）。
+_DOUYIN_WEB_VIA_WORKER = True
 
 
 def _is_douyin_host(host: str) -> bool:
@@ -2486,19 +2489,15 @@ def probe_playlist(url: str) -> dict[str, Any]:
 def _douyin_info(url: str) -> dict[str, Any]:
     """调 VPS worker 拿抖音真实流，构造成 yt-dlp 兼容的 info dict。
 
-    🔴🔴 2026-11-03：web 端抖音**已改为明确引导到桌面端**，不再往 worker 里送。
-       原因不是"链接有错"，而是抖音 Argus 风控有两层，服务器侧两层都过不去：
-         · 第一层「没登录态」→ 云端 Cookie 池或许能补；
-         · 第二层「UIFID 设备指纹」→ 要求设备指纹与登录态**同源**，而服务器上
-           无论是纯 HTTP（游客 a_bogus）还是 Playwright（无头/有头 + 登录态注入）
-           跑出来的指纹都不是那台"登录过的设备"，表现为 Uifid Not Found / 空页。
-       桌面端能过是因为它真跑在用户自己的电脑上：本机浏览器 + 本机登录态，
-       指纹天然一致（见 server/douyin_cdp.py）。
-       所以这里直接给可执行的替代方案（下载桌面版、粘贴同一条链接、公开视频免登录），
-       而不是让用户对着「请稍后重试」反复重试 —— 重试一万次也是同一个结果。
-
-    保留 worker 分支代码：万一将来 worker 侧破防（或抖音放开），把
-    `_DOUYIN_WEB_VIA_WORKER` 打开即可，无需重写这里。
+    🔴🔴 2026-11-10 实测结论（推翻 11-03 旧判）：网页版抖音**已重新打通**。
+       关键修正：服务器侧必须走 **游客态真实浏览器**（douyin_resolve, cookies=None），
+       而非 a_bogus 纯 HTTP 直连 —— 后者无论游客/带登录态都被 Argus 确定性拦截。
+       登录态注入反而是死路：注入的 sessionid 与浏览器当场生成的 UIFID 不匹配，
+       会被 Argus 判异常。游客态无头 Chromium（ECS 上 ~10-50s）能拿到真实流，
+       2/2 公开视频实测成功。
+       桌面端 CDP 同理也是游客态浏览器，本机跑只是延迟更低、不受服务器 IP 限流。
+       所以网页版现在直接送 worker 解析；仅 **私密/关注/付费** 视频仍需登录，
+       服务器侧暂无解（桌面 CDP 同理），那种情况前端仍给桌面版引导。
 
     抖音 PC 网页两种流形态（2026-08-23 无声问题根因）：
     - 混合轨（v{id}-web.douyinvod.com 带音轨 mp4）→ 单直链下载（HttpFD，最稳）
