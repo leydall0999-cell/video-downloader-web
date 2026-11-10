@@ -874,7 +874,10 @@
         .join(' ') || '<span class="note">—</span>';
       return '<tr><td>' + esc(it.name || it.platform || '—')
         + '<br><span class="note">' + esc(it.platform || '') + '</span></td>'
-        + '<td>' + chip(it.status) + '</td>'
+        + '<td>' + chip(it.status)
+        + (it.detail ? '<br><span class="note">' + esc(it.detail) + '</span>' : '')
+        + ((it.repair && it.repair.note) ? '<br><span class="note">修复：' + esc(it.repair.note) + '</span>' : '')
+        + '</td>'
         + '<td class="real">' + esc(ev.success_total || 0) + ' 次 / ' + esc(ev.success_days || 0) + ' 天</td>'
         + '<td class="real">' + esc(ev.demand_total || 0) + '</td>'
         + '<td class="real">' + esc(fmtTs(ev.last_success_ts)) + '</td>'

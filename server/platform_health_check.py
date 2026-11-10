@@ -312,10 +312,11 @@ def _evidence_for(domains: list[str], succ: dict, dem: dict) -> dict:
     }
 
 
-# ---------------- 异常提醒（2026-11-03） ----------------
+# ---------------- 异常提醒（2026-11-03，2026-11-10 扩到修复/停滞） ----------------
 # 巡检结果只写进 ECS 的 JSON + 日志，没人会主动去翻 ⇒ 等于没巡检。
 # 这里只做两件事：① **比上一轮更差才提醒**（防刷屏）；② 提醒落到后台首屏（红条），
-# 可选再往群里发一条（VDL_HEALTH_WEBHOOK）。
+# 可选再往群里发一条（企业微信/钉钉/Bark，见 _notify）：覆盖新增异常 + 自动修复成功/失败
+# + 巡检停滞（>30h 无新表）。配置走环境变量 VDL_HEALTH_WEBHOOK 或 data/notify.json。
 _ALERT_PATH = os.environ.get(
     "VDL_HEALTH_ALERT_OUT",
     os.path.join(os.path.dirname(OUT_PATH), "platform_health_alerts.json"))
@@ -328,13 +329,19 @@ _ALERT_MIN_SEV = 3
 _MAX_ALERT_EVENTS = 100
 
 
-def _load_prev_status() -> dict:
-    """上一轮健康表里每个平台的状态（文件不存在=首次跑，返回空）。"""
+def _load_prev_doc() -> dict:
+    """读取上一轮完整健康表（含 generated_at）；文件不存在=首次跑，返回空。"""
     try:
         with open(OUT_PATH, "r", encoding="utf-8") as f:
-            prev = json.load(f)
+            return json.load(f)
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _load_prev_status(prev: dict | None = None) -> dict:
+    """上一轮健康表里每个平台的状态（首次跑/prev=None 时返回空）。"""
+    if prev is None:
+        prev = _load_prev_doc()
     return {it.get("platform"): it.get("status")
             for it in (prev.get("items") or [])
             if isinstance(it, dict) and it.get("platform")}
@@ -396,13 +403,36 @@ def _save_alerts(new_events: list) -> dict:
     return doc
 
 
+_NOTIFY_CONFIG_PATH = os.environ.get(
+    "VDL_HEALTH_NOTIFY_CONFIG",
+    os.path.join(os.path.dirname(OUT_PATH), "notify.json"))
+
+
+def _load_notify_config() -> tuple[str, str]:
+    """Webhook 来源：环境变量优先，其次 data/notify.json（{"webhook","kind"}）。
+    企业微信/钉钉通用 text 体；kind=bark 走 GET。未配置则返回空（不推送）。"""
+    url = (os.environ.get("VDL_HEALTH_WEBHOOK") or "").strip()
+    kind = (os.environ.get("VDL_HEALTH_WEBHOOK_KIND") or "").strip().lower()
+    if not url:
+        try:
+            with open(_NOTIFY_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f) or {}
+            url = (cfg.get("webhook") or "").strip()
+            kind = (kind or (cfg.get("kind") or "")).strip().lower()
+        except Exception:  # noqa: BLE001
+            pass
+    if not kind:
+        kind = "wecom"
+    return url, kind
+
+
 def _notify(msg: str) -> None:
     """可选推送。企业微信/钉钉群机器人同样是 {"msgtype":"text","text":{"content"}}，
-    所以缺省用这个体；Bark 用 VDL_HEALTH_WEBHOOK_KIND=bark（GET /标题/内容）。"""
-    url = (os.environ.get("VDL_HEALTH_WEBHOOK") or "").strip()
+    所以缺省用这个体；Bark 用 VDL_HEALTH_WEBHOOK_KIND=bark（GET /标题/内容）。
+    配置：环境变量 VDL_HEALTH_WEBHOOK，或 data/notify.json（免改 systemd）。"""
+    url, kind = _load_notify_config()
     if not url:
         return
-    kind = (os.environ.get("VDL_HEALTH_WEBHOOK_KIND") or "wecom").strip().lower()
     try:
         if kind == "bark":
             from urllib.parse import quote
@@ -553,14 +583,17 @@ def main() -> int:
                 status, source = "demand_only", "demand"
             elif known_limit:
                 # 已知限制（服务器侧永远解析不了）：诚实标 limited 而非 unknown，
-                # 不触发自动修复、不进待办。
+                # 不触发自动修复、不进待办；把 known_limit 文本带进 detail，
+                # 后台才能把「为什么受限」如实展示（否则只显示笼统的「无样本」。
                 status, source = "limited", "known_limit"
+                detail = known_limit
             else:
                 status, source = "unknown", "none"
+                detail = "无样本，按遥测/需求证据判定"
             items.append({"platform": key, "name": cfg.get("name", key),
                           "status": status, "source": source,
                           "ok": 0, "total": 0, "evidence": ev,
-                          "detail": "无样本，按遥测/需求证据判定"})
+                          "detail": detail})
             continue
 
         results = []
@@ -667,7 +700,8 @@ def main() -> int:
                       "repaired_pending_restart", "demand_only"))
 
     # 提醒：与上一轮比，只报「变差」的那几个（首次跑不报，否则一次刷一堆）
-    prev_status = _load_prev_status()
+    prev_doc = _load_prev_doc()
+    prev_status = _load_prev_status(prev_doc)
     new_events = _diff_alerts(items, prev_status)
     alert_doc = _save_alerts(new_events)
     out = {"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -734,12 +768,6 @@ def main() -> int:
         for e in new_events:
             print("      %s %s → %s  %s"
                   % (e["name"], e["from"], e["to"], (e.get("detail") or "")[:80]))
-        _notify("【视频工坊·平台巡检】%s 新增异常 %d 个\n%s"
-                % (time.strftime("%m-%d %H:%M"), len(new_events),
-                   "\n".join("- %s %s→%s %s"
-                             % (e["name"], e["from"], e["to"],
-                                (e.get("detail") or "")[:60])
-                             for e in new_events[:8])))
     elif alert_doc.get("unseen"):
         print("未读异常仍有 %d 条（此前产生的，后台首屏可见；点「知道了」可清）"
               % alert_doc["unseen"])
@@ -774,6 +802,39 @@ def main() -> int:
                   % (rp.get("status"), _rc.get("code"), rp.get("note", ""),
                      "  ⚠️需重启 vdl-web 才在线上生效"
                      if rp.get("restart_required") else ""))
+    # ---- 汇总推送到 IM（企业微信/钉钉/Bark）：一轮只发一条，仅在有「值得说」的事时发 ----
+    # 覆盖：新增异常（变差）、自动修复成功/失败、巡检停滞（>30h 无新表）。
+    _nparts = []
+    if new_events:
+        _nparts.append("【新增异常 %d 个】" % len(new_events))
+        for e in new_events[:8]:
+            _nparts.append("- %s %s→%s %s" % (e["name"], e["from"], e["to"],
+                                              (e.get("detail") or "")[:60]))
+    if repair_log:
+        for r in repair_log:
+            _rs = r.get("status")
+            if _rs in ("fixed", "improved"):
+                _nparts.append("✅ 自动修复成功：%s%s" % (
+                    r.get("name") or r.get("platform"),
+                    "（需重启 vdl-web 生效）" if r.get("restart_required") else ""))
+            elif _rs not in ("already_latest",):
+                _rc = (r.get("root_cause") or {})
+                _nparts.append("❌ 修复失败：%s 根因=%s %s" % (
+                    r.get("name") or r.get("platform"),
+                    _rc.get("label") or _rc.get("code") or "未知",
+                    (r.get("note") or "")[:60]))
+    _prev_gen = prev_doc.get("generated_at") or ""
+    if _prev_gen:
+        try:
+            _pg = time.mktime(time.strptime(_prev_gen, "%Y-%m-%d %H:%M:%S"))
+            if (time.time() - _pg) > 30 * 3600:
+                _nparts.append("⚠️ 巡检停滞：上次生成于 %s，已超 30 小时未见新巡检，请检查 vdl-platform-health.timer" % _prev_gen)
+        except Exception:  # noqa: BLE001
+            pass
+    if _nparts:
+        _notify("【视频工坊·平台巡检】%s\n%s" % (
+            time.strftime("%m-%d %H:%M"), "\n".join(_nparts)))
+
     print("-> %s" % OUT_PATH)
     return 0
 

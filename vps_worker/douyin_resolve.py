@@ -189,11 +189,11 @@ def resolve(url, timeout=30, cookies=None):
 
             page.on("response", _on_resp)
 
-            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            page.goto(url, wait_until="domcontentloaded", timeout=15000)
 
             # 轮询：滚动 + 触发播放，挑真实视频流（douyinvod.com，排除静态占位）
             chosen = None
-            deadline = time.time() + 20
+            deadline = time.time() + 15
             while time.time() < deadline:
                 try:
                     page.mouse.wheel(0, 600)
