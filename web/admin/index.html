@@ -75,6 +75,15 @@
   details.sub > summary { cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0; }
   .scroll { max-height:400px; overflow:auto; }
   .sub-h { color:var(--muted); font-size:12px; margin:14px 0 6px; }
+  /* 依赖工具版本卡片（2026-11-10） */
+  .tools-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; margin:10px 0; }
+  .tool-card { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .tool-card .tn { font-size:12px; color:var(--muted); }
+  .tool-card .tv { font-size:15px; font-weight:600; margin-top:2px; word-break:break-all; }
+  .tool-card .tnote { font-size:12px; margin-top:3px; }
+  .tool-card.ok { border-color:var(--green); }
+  .tool-card.warn { border-color:var(--amber); }
+  .tool-card.bad { border-color:var(--red); }
   /* 多页签（2026-11-01）：与 App 后台九个页签一一对应，看的是同一份云端数据 */
   .tabs { display:flex; gap:2px; flex-wrap:wrap; padding:0 24px; border-bottom:1px solid var(--line);
     background:var(--panel); position:sticky; top:0; z-index:6; }
@@ -195,6 +204,14 @@
     <details class="sub">
       <summary>解析需求榜（用户要但没拿到，按域名聚合）</summary>
       <div id="demandBox"></div>
+    </details>
+    <details class="sub" id="toolsFold">
+      <summary>依赖工具版本 · yt-dlp 自动更新状态</summary>
+      <div id="toolsBox" class="tools-grid"></div>
+    </details>
+    <details class="sub" id="repairFold">
+      <summary>本轮机修记录（自动修复成功 / 失败明细）</summary>
+      <div id="repairBox"></div>
     </details>
     <details class="sub" id="usageFold">
       <summary>三端用量 · 平台全景（Mac / Win / 网页合计）</summary>
@@ -626,7 +643,104 @@
       ['平台', '状态', '根因', '建议动作', 'yt-dlp', '派单时间'], rows, '暂无派单');
   }
 
-  // ---------------- 巡检异常提醒（2026-11-03） ----------------
+  // ---------------- 依赖工具版本 / yt-dlp 自动更新（2026-11-10） ----------------
+  // 把健康表里的 yt_dlp 与 tools 字段渲染成卡片；yt-dlp 还会显示「有无可用更新 /
+  // 本次是否更新 / 是否需重启生效」。其余工具只报告版本，不自动升级。
+  function toolCard(name, ver, cls, note) {
+    return '<div class="tool-card ' + (cls || '') + '">'
+      + '<div class="tn">' + esc(name) + '</div>'
+      + '<div class="tv">' + esc(ver || '—') + '</div>'
+      + (note ? '<div class="tnote">' + esc(note) + '</div>' : '') + '</div>';
+  }
+  function renderTools(check) {
+    const box = $('toolsBox');
+    if (!box) return;
+    if (!check) { box.innerHTML = '<p class="note">本轮机修未产出工具信息。</p>'; return; }
+    const tools = check.tools || {};
+    const y = check.yt_dlp || {};
+    let html = '';
+    // yt-dlp 卡片：当前 / 可用最新 / 上游最新 + 本次更新结果
+    const rep = y.report || {};
+    const upd = y.update || {};
+    let ycls = 'ok', ynote = '';
+    if (!y.available) {
+      ycls = 'bad'; ynote = '更新模块不可用';
+    } else if (upd.updated) {
+      ycls = 'ok'; ynote = '本次已更新 → ' + esc(upd.version || '') + '，自动重启生效';
+    } else if (upd.skipped) {
+      ycls = 'mute'; ynote = '主动更新已关闭（VDL_HEALTH_YDLP_UPDATE=0）';
+    } else if (upd.error) {
+      ycls = 'bad'; ynote = '更新失败：' + esc(String(upd.error).slice(0, 80));
+    } else if (rep.latest && rep.current && rep.latest !== rep.current) {
+      ycls = 'warn'; ynote = '有可用更新（' + esc(rep.current) + ' → ' + esc(rep.latest) + '），下次巡检安装';
+    } else {
+      ycls = 'ok'; ynote = '已是最新兼容版（' + esc(rep.latest || rep.current || '—') + '）';
+    }
+    let yver = rep.current || '—';
+    if (rep.latest && rep.latest !== rep.current) yver += ' / 最新 ' + rep.latest;
+    if (rep.latest_upstream && rep.latest_upstream !== rep.latest)
+      yver += '（上游 ' + rep.latest_upstream + '）';
+    html += toolCard('yt-dlp（解析器）', yver, ycls, ynote);
+    const LABEL = { ffmpeg: 'ffmpeg（合并/转码）', node: 'Node.js（前端/扩展·构建期）',
+      python: 'Python（后端解释器）', playwright: 'Playwright（无头浏览器）',
+      chromium: 'Chromium（无头浏览器内核）' };
+    // ffmpeg / Chromium / Playwright 是运行期硬依赖，缺失才标红；
+    // Node.js 仅构建期需要（前端预编译后静态伺服，运行期可无），缺失不算异常。
+    for (const k of ['ffmpeg', 'python', 'node', 'playwright', 'chromium']) {
+      if (!(k in tools)) continue;
+      const v = tools[k];
+      const runtime = (k === 'ffmpeg' || k === 'chromium' || k === 'playwright');
+      const missing = /未安装|无法|不可用/.test(v);
+      const bad = runtime && missing;
+      const note = (!runtime && missing) ? '仅构建期需要，运行期可无'
+                 : (bad ? '缺失，相关功能可能异常' : '');
+      html += toolCard(LABEL[k] || k, v, bad ? 'bad' : 'ok', note);
+    }
+    box.innerHTML = html;
+  }
+  // 巡检停滞看门狗：健康表比当前时间老 > 30h ⇒ 提示「巡检可能停了」
+  function renderHealthStale(check) {
+    const box = $('healthMeta');
+    if (!box || !check) return;
+    const ga = check.generated_at || '';
+    const m = ga.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+    if (!m) return;
+    const ts = Date.parse(ga.replace(' ', 'T') + '+08:00');
+    if (isNaN(ts)) return;
+    const ageH = (Date.now() - ts) / 3600000;
+    if (ageH > 30) {
+      box.innerHTML = '<span class="chip bad">⚠️ 巡检可能已停止</span> 最近巡检 '
+        + esc(ga) + '（已 ' + ageH.toFixed(1) + ' 小时没更新，正常应每 12h 一次）。'
+        + '请检查服务器 systemctl status vdl-platform-health.timer';
+    }
+  }
+  // 本轮机修记录：把健康表 repairs 里的每次自动修复尝试（成功/失败）列出来，
+  // 让后台一眼看到「哪些平台被自动升版修好了、哪些升版也救不了」。
+  function renderRepairs(check) {
+    const box = $('repairBox');
+    if (!box) return;
+    const reps = (check && check.repairs) || [];
+    if (!reps.length) {
+      box.innerHTML = '<p class="empty">本轮机修无记录：没有平台被判 broken，也就没触发自动修复。</p>';
+      return;
+    }
+    const rows = reps.map((r) => {
+      const st = r.status || '?';
+      const sb = (r.state_before && (r.state_before.effective || r.state_before.shadow)) || '?';
+      const sa = (r.state_after && (r.state_after.effective || r.state_after.shadow))
+        || r.ytdlp_after || sb;
+      const ver = sb === sa ? sb : (sb + ' → ' + sa);
+      const rc = (r.root_cause && (r.root_cause.label || r.root_cause.code)) || '—';
+      return '<tr>'
+        + '<td>' + esc(r.name || r.platform || '—') + '</td>'
+        + '<td>' + chip(st) + '</td>'
+        + '<td>' + esc(rc) + '</td>'
+        + '<td class="real">' + esc(ver) + '</td>'
+        + '<td class="where">' + esc(r.note || '—') + '</td></tr>';
+    });
+    box.innerHTML = table(
+      ['平台', '修复结果', '根因', 'yt-dlp', '备注'], rows, '本轮机修无记录');
+  }
   // 巡检只报「比上一轮变差」的平台，未读的落在这里，任何页签首屏都看得到。
   // 修这个的原因：结果只写 ECS 的 json + 日志，没人会主动去翻 ⇒ 巡检等于白跑。
   function renderAlerts(a) {
@@ -694,6 +808,9 @@
         + ' · 健康表 ' + (check._file || '');
     }
     renderTickets(d.repair_tickets);
+    renderTools(check);
+    renderHealthStale(check);
+    renderRepairs(check);
 
     // 成功遥测：只到域名粒度，没有 URL（隐私口径写在接口注释里）
     const succ = d.success || [];

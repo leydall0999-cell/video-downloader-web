@@ -38,6 +38,15 @@
   `degraded` 不触发：实测多为内容级限制（B站某视频 412），升版无用且白担风险。
   环境变量 VDL_HEALTH_AUTOREPAIR=0 可关闭自动修复。
 
+  yt-dlp 主动更新（2026-11-10 新增）：除 broken 时自动修复层升版外，**每次巡检都主动检查并
+  安装当前解释器可用的最新兼容版**（`ydlp_update.update()`，sha256 校验 + 影子目录原子替换）。
+  装完后若本次确有新版本 → 巡检结束**自动重启 vdl-web** 使其生效（不再只写 PENDING_RESTART
+  标记等人手动重启）。开关：VDL_HEALTH_YDLP_UPDATE=0 关闭主动更新；VDL_HEALTH_APPLY_RESTART=0
+  关闭自动重启（退回「只装影子目录 + 标记」的旧行为）。重启命令 VDL_HEALTH_RESTART_CMD，默认
+  `systemctl restart vdl-web`。
+  另采集 ffmpeg / Playwright / Chromium / Node / Python 当前版本写入健康表 `tools` 字段，
+  供后台「平台健康」面板展示（这些工具只报告、不自动升级；只有 yt-dlp 会主动更新）。
+
 用法：
     python platform_health_check.py                 # 全量巡检
     python platform_health_check.py bilibili douyin # 只测指定平台 key
@@ -46,6 +55,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -99,6 +109,17 @@ except Exception:  # noqa: BLE001
 
 # 自动修复开关：默认开启（用户要求接上），可 VDL_HEALTH_AUTOREPAIR=0 关闭
 AUTOREPAIR = os.environ.get("VDL_HEALTH_AUTOREPAIR", "1").strip() not in ("0", "false", "no")
+
+# yt-dlp 主动更新（2026-11-10）：除 broken 时自动修复层升版外，每次巡检都主动检查并安装
+# 当前解释器可用的最新兼容版；装完后若本次确有新版本，巡检结束自动重启 vdl-web 使其生效。
+try:
+    import ydlp_update
+except Exception:  # noqa: BLE001
+    ydlp_update = None
+# 主动更新 yt-dlp 开关（默认开）；设 0 关闭主动更新（仅 broken 时由自动修复层升版）
+YDLP_PROACTIVE_UPDATE = os.environ.get("VDL_HEALTH_YDLP_UPDATE", "1").strip() not in ("0", "false", "no")
+# 更新后是否自动重启 vdl-web 使其生效（默认开；设 0 则只装影子目录并写 PENDING_RESTART 标记）
+APPLY_RESTART = os.environ.get("VDL_HEALTH_APPLY_RESTART", "1").strip() not in ("0", "false", "no")
 
 
 def _http(url: str, timeout: int = 20, data: bytes | None = None) -> tuple[int, str]:
@@ -395,6 +416,99 @@ def _notify(msg: str) -> None:
         print("提醒推送失败: %s" % e)
 
 
+# ---------------------------------------------------------------- 工具版本采集
+def _run_ver(args: list[str], timeout: int = 25) -> str:
+    """跑一条命令拿首行输出；失败返回空串（绝不因探测工具缺失而崩巡检）。"""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return ""
+    out = (r.stdout or r.stderr or "").strip()
+    return out.splitlines()[0] if out else ""
+
+
+def _collect_tool_versions() -> dict:
+    """采集依赖工具当前版本（只读，不自动升级；除 yt-dlp 外的更新由人决定）。"""
+    tools: dict[str, str] = {}
+    # ffmpeg（解析/合并必需）
+    ff = _run_ver(["ffmpeg", "-version"])
+    m = re.search(r"ffmpeg version (\S+)", ff)
+    tools["ffmpeg"] = m.group(1) if m else (ff[:60] if ff else "未安装")
+    # Node.js（仅构建期需要：前端预编译后静态伺服，运行期无需）
+    nd = _run_ver(["node", "--version"])
+    tools["node"] = nd.lstrip("v") if nd.startswith("v") else (nd[:40] if nd else "未安装")
+    # Python 解释器（决定 yt-dlp 能跟到多新）
+    tools["python"] = "%d.%d.%d" % sys.version_info[:3]
+    # Playwright（无头 Chromium 解析依赖）+ Chromium 浏览器版本。
+    # 直接按安装路径 glob 找可执行文件跑 --version，避免启动 Playwright 驱动进程
+    # （否则每日巡检退出时会有 asyncio「Task destroyed」噪声告警）。
+    try:
+        from importlib.metadata import version as _meta_ver
+        tools["playwright"] = _meta_ver("playwright")
+        import glob
+        _base = os.path.expanduser("~/.cache/ms-playwright")
+        cands = sorted(
+            glob.glob(os.path.join(_base, "chromium*", "chrome-linux*", "chrome"))
+            + glob.glob(os.path.join(_base, "chromium*", "chrome-linux*", "headless_shell")),
+            reverse=True)
+        if cands and os.path.isfile(cands[0]):
+            cr = _run_ver([cands[0], "--version"])
+            tools["chromium"] = cr or "已安装(版本未知)"
+        else:
+            tools["chromium"] = "未安装"
+    except Exception:  # noqa: BLE001
+        tools["playwright"] = "未安装"
+        tools["chromium"] = "未安装"
+    return tools
+
+
+def _restart_vdl_web() -> dict:
+    """重启 vdl-web 使新装到影子目录的 yt-dlp 真正生效；失败只告警不崩。"""
+    cmd = os.environ.get("VDL_HEALTH_RESTART_CMD", "systemctl restart vdl-web")
+    try:
+        r = subprocess.run(cmd.split(), capture_output=True, text=True, timeout=90)
+        if r.returncode == 0:
+            print("✅ 已自动重启 vdl-web 使 yt-dlp 更新生效")
+            return {"ok": True, "cmd": cmd}
+        print("⚠️ 重启 vdl-web 失败(退出码 %d)：%s" % (r.returncode, (r.stderr or "")[:200]))
+        return {"ok": False, "cmd": cmd, "code": r.returncode,
+                "error": (r.stderr or r.stdout or "")[:200]}
+    except Exception as e:  # noqa: BLE001
+        print("⚠️ 重启 vdl-web 异常：%s" % e)
+        return {"ok": False, "error": str(e)}
+
+
+def _ydlp_proactive_update() -> dict:
+    """每次巡检主动检查并安装当前解释器可用的最新 yt-dlp；返回结果摘要。"""
+    if ydlp_update is None:
+        return {"available": False, "error": "ydlp_update 模块不可用"}
+    info: dict = {"available": True}
+    try:
+        info["report"] = ydlp_update.version_report()
+    except Exception as e:  # noqa: BLE001
+        info["report"] = None
+        info["report_error"] = str(e)
+    if not YDLP_PROACTIVE_UPDATE:
+        info["update"] = {"skipped": True, "reason": "VDL_HEALTH_YDLP_UPDATE=0"}
+        return info
+    try:
+        info["update"] = ydlp_update.update()
+    except Exception as e:  # noqa: BLE001
+        info["update"] = {"ok": False, "error": str(e)}
+    return info
+
+
+def _maybe_restart_for_ydlp(ydlp_info: dict, pending_path: str) -> None:
+    """本次装了新 yt-dlp 或有平台修好待重启 ⇒ 重启 vdl-web（默认开，可关）。"""
+    if not APPLY_RESTART:
+        return
+    did_update = bool((ydlp_info.get("update") or {}).get("updated"))
+    pending = os.path.isfile(pending_path)
+    if not did_update and not pending:
+        return
+    _restart_vdl_web()
+
+
 def main() -> int:
     try:
         with open(SAMPLES_PATH, "r", encoding="utf-8") as f:
@@ -402,6 +516,20 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         print("样本库读取失败: %s (%s)" % (SAMPLES_PATH, e))
         return 2
+
+    # 主动更新 yt-dlp（2026-11-10）：每次巡检都检查并安装当前解释器可用的最新兼容版，
+    # 让自动修复层的升版「永远是最新」且巡检结束自动重启生效；同时采集依赖工具版本。
+    ydlp_info = _ydlp_proactive_update()
+    tool_versions = _collect_tool_versions()
+    if (ydlp_info.get("update") or {}).get("updated"):
+        print("yt-dlp 主动更新：%s → %s（巡检结束自动重启 vdl-web 生效）"
+              % ((ydlp_info.get("report") or {}).get("current"),
+                 (ydlp_info.get("update") or {}).get("version")))
+    elif (ydlp_info.get("report") or {}).get("latest"):
+        print("yt-dlp：当前 %s / 可用最新 %s（已是最新兼容版）"
+              % ((ydlp_info.get("report") or {}).get("current"),
+                 (ydlp_info.get("report") or {}).get("latest")))
+    print("依赖工具版本：%s" % "  ".join("%s=%s" % (k, v) for k, v in tool_versions.items()))
 
     succ, dem = _load_evidence()
     only = set(sys.argv[1:])
@@ -556,6 +684,8 @@ def main() -> int:
                            "repaired_pending_restart", 0),
                        "needs_manual": counts.get("needs_manual", 0)},
            "repairs": repair_log,
+           "yt_dlp": ydlp_info,
+           "tools": tool_versions,
            "items": items}
     try:
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
@@ -581,6 +711,10 @@ def main() -> int:
             os.remove(_pending_path)
     except Exception:  # noqa: BLE001
         pass
+
+    # 让 yt-dlp 更新真正生效：本次装了新版本 或 有平台修好待重启 ⇒ 重启 vdl-web。
+    # （默认开；VDL_HEALTH_APPLY_RESTART=0 则只装影子目录 + 写 PENDING_RESTART 标记，不自动重启。）
+    _maybe_restart_for_ydlp(ydlp_info, _pending_path)
 
     print("== 平台健康表 %s ==" % out["generated_at"])
     print("遥测可用=%s 需求可用=%s（窗口 成功%d天 / 需求%d天）"
