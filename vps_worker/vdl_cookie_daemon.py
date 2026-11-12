@@ -227,11 +227,10 @@ def _collect_and_cache():
         # 硬超时兜底：见 COLLECT_TIMEOUT 注释。线程无法强杀，但必须保证
         # ①锁一定释放（否则用户解析被饿死）②卡死的 chromium 被 SIGKILL。
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        fut = ex.submit(_collect_cookies, SESSDATA)
         try:
+            fut = ex.submit(_collect_cookies, SESSDATA)
             header, passed, hit_slider, cookies = fut.result(timeout=COLLECT_TIMEOUT)
         except concurrent.futures.TimeoutError:
-            ex.shutdown(wait=False)
             _kill_all_chromium()
             logger.warning("[collect] 收集超时(>%ss)，已清理 chromium 并跳过本轮",
                            COLLECT_TIMEOUT)
@@ -240,11 +239,12 @@ def _collect_and_cache():
                               msg="collect timeout >%ss" % COLLECT_TIMEOUT)
             return None
         except Exception as e:  # noqa: BLE001
-            ex.shutdown(wait=False)
             _kill_all_chromium()
             logger.warning("[collect] 收集失败，已清理 chromium: %s", str(e)[:150])
             raise
-        ex.shutdown(wait=False)
+        finally:
+            # 与 do_resolve 同一铁律：线程池必须无条件 shutdown（否则 worker 永驻）。
+            ex.shutdown(wait=False)
         with _lock:
             _cached.update(cookie=header, cookies=cookies, ts=int(time.time()),
                            passed=passed, hit_slider=hit_slider)
@@ -597,21 +597,27 @@ def do_resolve(platform, url, cookie=""):
         # 可能显著变慢（>90s），超出 Railway 限时。这里强制 85s 上限，超时杀
         # chromium 并返回干净错误，避免请求堆积在 _resolve_lock 后饿死后续请求。
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # 仅 finder 平台透传 cookie（其余 resolver 无 cookie 参数，避免 TypeError）
-        if platform == "finder" and cookie:
-            fut = ex.submit(resolver, url, cookie=cookie)
-        else:
-            fut = ex.submit(resolver, url)
         try:
-            result = fut.result(timeout=85)
+            # 仅 finder 平台透传 cookie（其余 resolver 无 cookie 参数，避免 TypeError）
+            if platform == "finder" and cookie:
+                fut = ex.submit(resolver, url, cookie=cookie)
+            else:
+                fut = ex.submit(resolver, url)
+            try:
+                result = fut.result(timeout=85)
+                return True, result
+            except concurrent.futures.TimeoutError:
+                # shutdown 交给 finally（wait=False：不阻塞等待卡死的 worker 线程，
+                # 线程无法强杀，但 chromium 已被清掉，线程会在下次访问页面时抛错退出）
+                _kill_all_chromium()
+                return False, "解析超时（>85s，VPS 资源紧张或平台变慢），请稍后重试"
+        finally:
+            # 🔴 必须**无条件** shutdown：worker 线程只有收到 shutdown 哨兵才会退出。
+            # 2026-11-13 实测：resolver 抛异常（Playwright 的 TimeoutError/TargetClosedError
+            # 不是 concurrent.futures.TimeoutError，会落到外层 except）时漏 shutdown
+            # ⇒ 每次泄漏一个空闲 worker 线程（py-spy 见停在 thread.py:_worker 的
+            # work_queue.get），2.5 天累积 39 个，缓慢逼近 cgroup pids 配额。
             ex.shutdown(wait=False)
-            return True, result
-        except concurrent.futures.TimeoutError:
-            # shutdown(wait=False)：不阻塞等待卡死的 worker 线程（线程无法强杀，
-            # 但 chromium 已被清掉，线程会在下次访问页面时自然抛错退出）
-            ex.shutdown(wait=False)
-            _kill_all_chromium()
-            return False, "解析超时（>85s，VPS 资源紧张或平台变慢），请稍后重试"
     except Exception as e:
         _kill_all_chromium()
         return False, str(e)[:300]

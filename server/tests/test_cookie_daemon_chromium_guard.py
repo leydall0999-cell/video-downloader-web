@@ -235,6 +235,60 @@ _thr = [n.value for n in ast.walk(dtree) if isinstance(n, ast.Assign)
 _must(bool(_thr) and _thr[0] >= 128,
       "PIDS_MIN_RECOMMENDED 至少 128（实测单次采集峰值 81 个 task）")
 
+print("\n=== 10. 线程池必须无条件 shutdown（异常路径漏 shutdown ⇒ worker 线程永驻）===")
+# 2026-11-13 实测：do_resolve 在 resolver 抛异常时漏掉 ex.shutdown()。原因＝
+# Playwright 抛的 TimeoutError/TargetClosedError **不是** concurrent.futures.TimeoutError，
+# 会落到外层 except 分支，那条路径当时没有 shutdown ⇒ worker 线程永远停在
+# concurrent/futures/thread.py 的 work_queue.get（py-spy 实测 39 个空闲线程，
+# 创建时刻全落在 04:30/16:30 巡检附近），2.5 天累积到 42/256 个 task，
+# 缓慢逼近 cgroup pids 配额（与 11-09 pids 打满停摆同源）。
+# 规则：每个 ThreadPoolExecutor 创建点必须**紧跟**一个 try/finally，且 finally
+# 里调用 shutdown()；任何 return/raise 都在这层 finally 之后。
+
+
+def _is_tpe_assign(node):
+    if not isinstance(node, ast.Assign):
+        return False
+    for n in ast.walk(node.value):
+        if isinstance(n, ast.Call):
+            f = n.func
+            name = f.attr if isinstance(f, ast.Attribute) else (
+                f.id if isinstance(f, ast.Name) else "")
+            if name == "ThreadPoolExecutor":
+                return True
+    return False
+
+
+def _finalbody_shuts_down(try_node):
+    for stmt in try_node.finalbody:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                    and n.func.attr == "shutdown":
+                return True
+    return False
+
+
+def _stmt_lists(root):
+    for n in ast.walk(root):
+        for field in ("body", "orelse", "finalbody"):
+            lst = getattr(n, field, None)
+            if isinstance(lst, list):
+                yield lst
+        for h in getattr(n, "handlers", None) or []:
+            yield h.body
+
+
+tpe_sites = [n for n in ast.walk(dtree) if _is_tpe_assign(n)]
+_must(len(tpe_sites) >= 2,
+      "守护进程存在 2 处线程池创建（collect 收集 / resolve 解析）")
+guarded = 0
+for lst in _stmt_lists(dtree):
+    for cur, nxt in zip(lst, lst[1:]):
+        if _is_tpe_assign(cur) and isinstance(nxt, ast.Try) and _finalbody_shuts_down(nxt):
+            guarded += 1
+_must(guarded >= len(tpe_sites),
+      "每个线程池创建点紧跟 try/finally 并无条件 shutdown（漏 shutdown 会永久泄漏 worker 线程）")
+
 print("")
 if FAILS:
     print("❌ test_cookie_daemon_chromium_guard 失败 %d 项：" % len(FAILS))
