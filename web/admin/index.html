@@ -571,6 +571,11 @@
       since: '2026-11-01',
       note: '付费会员站，已明确告知不提供解析',
     },
+    {
+      hosts: ['haokan.baidu.com'],
+      since: '2026-11-13',
+      note: 'yt-dlp 已内置好看视频解析，重新粘贴链接即可',
+    },
   // 解析成「本地零点」：直接 Date.parse('2026-11-01') 走 UTC，会把当天凌晨的需求
   // 误判成修复前（差 8 小时），必须显式补 T00:00:00 交给本地时区。
   ].map((r) => ({ ...r, sinceTs: new Date(r.since + 'T00:00:00').getTime() / 1000 }));
@@ -825,7 +830,14 @@
 
     // 需求榜：有需求但完全没成功的域名，值得优先排查
     const succHosts = new Set((succ || []).map((r) => r.host));
-    const dem = d.demand || [];
+    // RFC 2606 测试/保留域名不算用户需求：健康巡检用 selfcheck.invalid、
+    // xxx.example.com 这类假样本验证「未知平台」分支，同样会被登记成需求。
+    const isTestHost = (h) => {
+      const s = String(h || '').toLowerCase().replace(/\.$/, '');
+      return !s || s === 'localhost'
+        || /\.(invalid|test|localhost|example|example\.com|example\.net|example\.org)$/.test(s);
+    };
+    const dem = (d.demand || []).filter((r) => !isTestHost(r.host));
     $('demandBox').innerHTML = table(
       ['域名', '覆盖周数', '需求次数', '最近一次', '分类', '状态'],
       dem.map((r) => {
