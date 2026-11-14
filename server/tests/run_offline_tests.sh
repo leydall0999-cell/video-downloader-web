@@ -376,6 +376,12 @@ run_one test_cookie_daemon_chromium_guard.py
 #  （详见 test_profile_cache_cap.py 头）。
 run_one test_profile_cache_cap.py
 
+#  Cookie 守护进程 resolver「导入即存在」守卫（2026-11-15）：daemon 顶部
+#  `from X_resolve import ...` 的每个模块必须在 vps_worker/ 里真实存在 ——
+#  lespark/liblib 两个 resolver 曾长期只存在于 ECS、不在 git，按仓库重新部署
+#  会直接 ImportError 让守护进程整体起不来（详见 test_worker_resolver_imports.py 头）。
+run_one test_worker_resolver_imports.py
+
 echo ""
 echo "========================================="
 echo "  通过: $PASS   失败: $FAIL"

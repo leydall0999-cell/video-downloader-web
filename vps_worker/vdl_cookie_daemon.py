@@ -123,6 +123,7 @@ from finder_resolve import resolve as finder_resolve  # noqa: E402
 from xiaohongshu_resolve import resolve as xiaohongshu_resolve  # noqa: E402
 from lespark_resolve import resolve as lespark_resolve  # noqa: E402
 from liblib_resolve import resolve as liblib_resolve  # noqa: E402
+from migu_resolve import resolve as migu_resolve  # noqa: E402
 
 
 def _load_env_file(path: str) -> None:
@@ -193,6 +194,7 @@ _RESOLVERS = {
     "xiaohongshu": xiaohongshu_resolve,
     "lespark": lespark_resolve,
     "liblib": liblib_resolve,
+    "migu": migu_resolve,
 }
 
 
@@ -598,8 +600,9 @@ def do_resolve(platform, url, cookie=""):
         # chromium 并返回干净错误，避免请求堆积在 _resolve_lock 后饿死后续请求。
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            # 仅 finder 平台透传 cookie（其余 resolver 无 cookie 参数，避免 TypeError）
-            if platform == "finder" and cookie:
+            # 仅接受 cookie 参数的平台透传（finder 微信视频号 / migu 咪咕）；
+            # 其余 resolver 无 cookie 参数，避免 TypeError。
+            if platform in ("finder", "migu") and cookie:
                 fut = ex.submit(resolver, url, cookie=cookie)
             else:
                 fut = ex.submit(resolver, url)

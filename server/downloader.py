@@ -4320,6 +4320,32 @@ def _weishi_info(url: str, proxy: str = "") -> dict[str, Any]:
     )
 
 
+def _migu_info(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
+    """咪咕视频（miguvideo.com）：走 ECS worker 纯 HTTP 解析。
+
+    v3 playurl 取明文地址 + WASM 计算 ddCalcu 签名 -> 跟随 GSLB 302 拿到可播 m3u8。
+    游客态即可（无需登录 Cookie）；CDN 不绑来源 IP，服务端解析 + 任意端下载成立。
+    """
+    data = _call_vps_worker("migu", url, cookie=cookie)
+    if not data.get("video_url"):
+        raise ResolveError("咪咕解析失败", "解析节点未返回视频流", category="parse_failed")
+    return {
+        "id": data.get("video_id", ""),
+        "title": data.get("title") or "咪咕视频",
+        "duration": data.get("duration"),
+        "webpage_url": data.get("webpage_url") or url,
+        "extractor_key": "Migu",
+        "extractor": "migu",
+        "ext": "mp4",
+        "direct": True,
+        "url": data.get("video_url"),
+        "protocol": "m3u8_native",
+        "thumbnail": data.get("thumbnail", ""),
+        "http_headers": data.get("http_headers") or {
+            "User-Agent": _NE_UA, "Referer": "https://www.miguvideo.com/"},
+    }
+
+
 def _finder_info(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
     """微信视频号（weixin.qq.com/sph/* → channels.weixin.qq.com/finder-preview/*）。
 
@@ -4675,6 +4701,9 @@ def probe(url: str, cookie: str = "", proxy: str = "") -> dict[str, Any]:
     # 微信视频号：weixin.qq.com/sph/* 短链 或 channels.weixin.qq.com 直链
     if ("weixin.qq.com" in (host or "")) or ("channels.weixin.qq.com" in (host or "")):
         return _finder_info(url, cookie=cookie, proxy=proxy)
+    # 咪咕视频：走 ECS worker 纯 HTTP 解析（游客态可解，无需登录 Cookie）
+    if "miguvideo.com" in (host or ""):
+        return _migu_info(url, cookie=cookie)
     # lespark.us：短剧/短视频，需登录态，走 VPS worker 拦截签名 m3u8
     if "lespark.us" in (host or ""):
         return _lespark_info(url)
