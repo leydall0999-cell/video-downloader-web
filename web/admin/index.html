@@ -366,7 +366,7 @@
     <div class="policy">
       <div class="row">
         <label>音频文件 <input type="file" id="bgmFile" accept=".mp3,.m4a,.wav,.aac,.flac,.ogg"></label>
-        <label>曲名 <input id="bgmName" placeholder="例如：温暖午后" maxlength="60" style="width:180px"></label>
+        <label>曲名 <input id="bgmName" placeholder="留空自动用文件名" maxlength="60" style="width:180px"></label>
         <label>分类
           <select id="bgmCategory">
             <option value="轻柔">轻柔</option>
@@ -1138,15 +1138,25 @@
       if (!IS_SUPER) { toast('仅超级管理员可上传（当前为管理员·只读）'); return; }
       const f = fl.files && fl.files[0];
       if (!f) { bgmHint('请先选择音频文件', true); return; }
-      const name = ($('bgmName').value || '').trim();
-      if (!name) { bgmHint('请填写曲名', true); return; }
+      const nameEl = $('bgmName');
+      let name = (nameEl.value || '').trim();
+      let autoNamed = false;
+      if (!name) {
+        // 曲名输入框在第一行很窄，用户常把曲名误填到下面更醒目的「授权说明」框里，
+        // 结果被硬拦在「请填写曲名」，看起来就像「上传不了」。这里按文件名兜底并回填，
+        // 让用户看见真正入库的曲名，不再因为填错框而让整次上传失败。
+        name = String(f.name || '').replace(/\.[^.]+$/, '').trim();
+        if (!name) { bgmHint('请填写曲名', true); return; }
+        nameEl.value = name;
+        autoNamed = true;
+      }
       const fd = new FormData();
       fd.append('file', f, f.name);
       fd.append('name', name);
       fd.append('category', $('bgmCategory').value || '其他');
       fd.append('license', ($('bgmLicense').value || '').trim());
       up.disabled = true;
-      bgmHint('上传中…');
+      bgmHint(autoNamed ? '上传中…（曲名已按文件名自动填为「' + name + '」）' : '上传中…');
       try {
         const d = await api('/api/admin/bgm/upload', { method: 'POST', body: fd });
         bgmHint('已入库：' + (d.track ? d.track.name : name));
