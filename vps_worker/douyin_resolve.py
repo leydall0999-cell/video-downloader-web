@@ -189,11 +189,17 @@ def resolve(url, timeout=30, cookies=None):
 
             page.on("response", _on_resp)
 
-            page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            # goto 45s（原 15s）：抖音页面重、冷启动 Chromium 慢，负载高时 15s 常被
+            # 掐掉 ⇒ 巡检/用户解析时好时坏（2026-11-16）。总预算 goto45+轮询15 仍远
+            # 小于 worker HTTP 90s 超时，安全。
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
 
             # 轮询：滚动 + 触发播放，挑真实视频流（douyinvod.com，排除静态占位）
+            # 30s（原 15s）：部分视频页面加载慢/自动播放触发晚，15s 内常捕不到
+            # douyinvod 流 ⇒ streams=0 时好时坏（2026-11-16 巡检实测）。
+            # goto45+轮询30 最坏 ~80s，仍低于 daemon 85s 硬上限。
             chosen = None
-            deadline = time.time() + 15
+            deadline = time.time() + 30
             while time.time() < deadline:
                 try:
                     page.mouse.wheel(0, 600)
