@@ -361,11 +361,12 @@
     <p class="note">
       上传的曲子存放在云端静态目录，可通过 <b>hanyuxz.top/bgm/…</b> 直连访问；
       桌面端「在线曲库」按 <b>library.json</b> 清单下载到本机后即可用于成片配乐。
+      <b>支持一次选择多个音频</b>：选完文件曲名会自动带出（可改），多首则各用自己的文件名，无需重复输入。
       曲目由你自行上传，请确认拥有相应使用授权。
     </p>
     <div class="policy">
       <div class="row">
-        <label>音频文件 <input type="file" id="bgmFile" accept=".mp3,.m4a,.wav,.aac,.flac,.ogg"></label>
+        <label>音频文件 <input type="file" id="bgmFile" accept=".mp3,.m4a,.wav,.aac,.flac,.ogg" multiple></label>
         <label>曲名 <input id="bgmName" placeholder="留空自动用文件名" maxlength="60" style="width:180px"></label>
         <label>分类
           <select id="bgmCategory">
@@ -1132,39 +1133,76 @@
   }
 
   function bindBgm() {
-    const up = $('bgmUpload'), fl = $('bgmFile');
+    const up = $('bgmUpload'), fl = $('bgmFile'), nameEl = $('bgmName');
     if (!up || !fl) return;
+
+    /** 文件名 → 曲名（去掉扩展名）；批量上传时每首各用自己的名字。 */
+    const fileTitle = (f) => String(f.name || '').replace(/\.[^.]+$/, '').trim();
+    const picked = () => (fl.files && fl.files.length) ? Array.prototype.slice.call(fl.files) : [];
+
+    /** 选完文件就把曲名带出来：单首自动填、可改；多首各用文件名，曲名框禁用。
+     *  「选文件」和「填曲名」合成一个动作，不必再照着文件名打一遍。 */
+    const syncName = () => {
+      if (!nameEl) return;
+      const fs = picked();
+      if (fs.length > 1) {
+        nameEl.value = '';
+        nameEl.disabled = true;
+        nameEl.placeholder = fs.length + ' 首·各用文件名';
+      } else {
+        nameEl.disabled = false;
+        nameEl.placeholder = '留空自动用文件名';
+        if (fs.length === 1) nameEl.value = fileTitle(fs[0]);
+      }
+    };
+    fl.addEventListener('change', syncName);
+    syncName();
+
     up.addEventListener('click', async () => {
       if (!IS_SUPER) { toast('仅超级管理员可上传（当前为管理员·只读）'); return; }
-      const f = fl.files && fl.files[0];
-      if (!f) { bgmHint('请先选择音频文件', true); return; }
-      const nameEl = $('bgmName');
-      let name = (nameEl.value || '').trim();
-      let autoNamed = false;
-      if (!name) {
-        // 曲名输入框在第一行很窄，用户常把曲名误填到下面更醒目的「授权说明」框里，
-        // 结果被硬拦在「请填写曲名」，看起来就像「上传不了」。这里按文件名兜底并回填，
-        // 让用户看见真正入库的曲名，不再因为填错框而让整次上传失败。
-        name = String(f.name || '').replace(/\.[^.]+$/, '').trim();
-        if (!name) { bgmHint('请填写曲名', true); return; }
-        nameEl.value = name;
-        autoNamed = true;
-      }
-      const fd = new FormData();
-      fd.append('file', f, f.name);
-      fd.append('name', name);
-      fd.append('category', $('bgmCategory').value || '其他');
-      fd.append('license', ($('bgmLicense').value || '').trim());
+      const fs = picked();
+      if (!fs.length) { bgmHint('请先选择音频文件', true); return; }
+      const only = fs.length === 1;
+      const manual = only ? ((nameEl && nameEl.value || '').trim()) : '';
+      const category = $('bgmCategory').value || '其他';
+      const license = ($('bgmLicense').value || '').trim();
+      const doneNames = [], fails = [];
       up.disabled = true;
-      bgmHint(autoNamed ? '上传中…（曲名已按文件名自动填为「' + name + '」）' : '上传中…');
-      try {
-        const d = await api('/api/admin/bgm/upload', { method: 'POST', body: fd });
-        bgmHint('已入库：' + (d.track ? d.track.name : name));
-        fl.value = ''; $('bgmName').value = ''; $('bgmLicense').value = '';
-        loadedView.bgm = false; ensureView('bgm');
-      } catch (e) {
-        bgmHint('上传失败：' + e.message, true);
-      } finally { up.disabled = false; }
+      for (let i = 0; i < fs.length; i++) {
+        const f = fs[i];
+        // 单首时优先用框里的曲名（选完已自动带出，可改）；多首一律用各自文件名
+        const name = (only && manual) ? manual : fileTitle(f);
+        if (!name) {
+          fails.push((f.name || ('第 ' + (i + 1) + ' 个文件')) + '（曲名为空）');
+          continue;
+        }
+        const fd = new FormData();
+        fd.append('file', f, f.name);
+        fd.append('name', name);
+        fd.append('category', category);
+        fd.append('license', license);
+        bgmHint('上传中 ' + (i + 1) + '/' + fs.length + '：' + name);
+        try {
+          await api('/api/admin/bgm/upload', { method: 'POST', body: fd });
+          doneNames.push(name);
+        } catch (e) {
+          fails.push(name + '（' + (e && e.message ? e.message : '失败') + '）');
+        }
+      }
+      up.disabled = false;
+      bgmHint(fails.length
+        ? ('已入库 ' + doneNames.length + ' 首；失败 ' + fails.length + ' 首：' + fails.join('、'))
+        : ('已入库 ' + doneNames.length + ' 首：' + doneNames.join('、')),
+        fails.length > 0);
+      fl.value = '';
+      $('bgmLicense').value = '';
+      // 显式复位曲名框，不依赖上面清空 FileList 的时机（批量后必须能继续选下一批）
+      if (nameEl) {
+        nameEl.value = '';
+        nameEl.disabled = false;
+        nameEl.placeholder = '留空自动用文件名';
+      }
+      loadedView.bgm = false; ensureView('bgm');
     });
     const rf = $('bgmRefresh');
     if (rf) rf.addEventListener('click', () => { loadedView.bgm = false; ensureView('bgm'); });
