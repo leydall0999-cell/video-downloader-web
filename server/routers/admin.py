@@ -1218,6 +1218,24 @@ def _bgm_remove(tid: str) -> bool:
     return True
 
 
+def _bgm_set_category(tid: str, category: str) -> Optional[dict]:
+    """只改清单里的分类：不动音频文件、不换 id、不改上传日期。
+
+    返回更新后的曲目；id 非法或曲目不存在返回 None。与 _bgm_add/_bgm_remove
+    一样在 _BGM_LOCK 内读改写，避免与上传 / 删除并发时丢更新。
+    """
+    if not _BGM_ID_RE.match(tid or ""):
+        return None
+    with _BGM_LOCK:
+        lib = _bgm_load()
+        hit = next((t for t in lib["tracks"] if t.get("id") == tid), None)
+        if not hit:
+            return None
+        hit["category"] = (category or "")[:30]
+        _bgm_save(lib)
+        return dict(hit)
+
+
 @router.get("/api/admin/bgm")
 def admin_bgm_list(request: Request = None) -> dict[str, Any]:
     """曲库清单（管理员只读可见）。附带每首的直链，后台可直接试听。"""
@@ -1270,3 +1288,24 @@ def admin_bgm_delete(payload: dict[str, Any] = Body(...), request: Request = Non
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="曲目不存在或 id 非法")
     return {"ok": True, "total": len(_bgm_load().get("tracks", []))}
+
+
+@router.post("/api/admin/bgm/category")
+def admin_bgm_set_category(payload: dict[str, Any] = Body(...), request: Request = None) -> dict[str, Any]:
+    """改分类：只重写 library.json 里这首的 category，音频文件与 id 都不变。
+
+    与上传 / 删除一样只放行超级管理员；分类沿用上传表的可选值，后端只限长 30
+    （允许后台以后扩展分类，不写死白名单）。
+    """
+    require_super_backend(request)
+    tid = str(payload.get("id") or "")
+    category = str(payload.get("category") or "").strip()
+    if not category:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="请选择分类")
+    track = _bgm_set_category(tid, category)
+    if not track:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="曲目不存在或 id 非法")
+    track["url"] = BGM_BASE_URL + str(track.get("file") or "")
+    return {"ok": True, "track": track, "total": len(_bgm_load().get("tracks", []))}

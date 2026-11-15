@@ -18,6 +18,10 @@
   button { background:var(--accent); color:#fff; border:none; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
   button.ghost { background:var(--panel2); color:var(--txt); border:1px solid var(--line); }
   button:active { transform:translateY(1px); }
+  /* 曲库操作列：改分类 + 删除并排，按钮收小避免撑宽表格；点「改分类」就地变下拉 */
+  .bgm-actions { display:flex; align-items:center; gap:6px; }
+  .bgm-actions button.ghost { padding:5px 9px; font-size:12px; white-space:nowrap; }
+  select.bgm-cat-select { padding:5px 7px; font-size:12px; border-radius:8px; max-width:100px; }
   .wrap { padding:20px 24px; display:grid; gap:20px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
   .panel h2 { font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
@@ -1086,26 +1090,81 @@
     h.className = 'note' + (bad ? ' err' : '');
   }
 
+  /** 曲库可选分类：与上方「分类」下拉一致；历史清单里的自定义值也会原样列出。 */
+  const BGM_CATS = ['轻柔', '轻快', '恢弘', '氛围', '其他'];
+
   function renderBgm(tracks) {
     const box = $('bgmBox');
     if (!box) return;
     $('bgmMeta').textContent = '共 ' + tracks.length + ' 首 · 清单 hanyuxz.top/bgm/library.json';
     const rows = tracks.map((t) => {
       const url = String(t.url || '');
+      const cat = String(t.category || '其他');
       const audio = '<audio controls preload="none" src="' + esc(url)
         + '" style="height:32px;width:190px"></audio>';
       const del = '<button class="ghost" data-bgm-del="' + esc(t.id) + '"'
         + (IS_SUPER ? '' : ' disabled') + '>删除</button>';
-      return '<tr><td><b>' + esc(t.name || '未命名') + '</b><br><span class="note">'
-        + esc(t.category || '其他') + '</span></td>'
+      const edit = '<button class="ghost" data-bgm-cat="' + esc(t.id) + '"'
+        + (IS_SUPER ? '' : ' disabled') + '>改分类</button>';
+      return '<tr><td><b>' + esc(t.name || '未命名') + '</b><br><span class="note"'
+        + ' data-bgm-cat-label="' + esc(t.id) + '">' + esc(cat) + '</span></td>'
         + '<td>' + audio + '</td>'
         + '<td>' + bgmDur(t) + '<br><span class="note">' + bgmSize(t) + '</span></td>'
         + '<td><span class="note">' + esc(String(t.license || '').slice(0, 40)) + '</span></td>'
         + '<td><span class="note">' + esc(String(t.uploaded_at || '').slice(0, 10)) + '</span></td>'
-        + '<td>' + del + '</td></tr>';
+        + '<td><div class="bgm-actions">' + edit + del + '</div></td></tr>';
     });
     box.innerHTML = table(['曲名 / 分类', '试听', '时长 / 大小', '授权说明', '上传日期', '操作'],
       rows, '曲库还是空的：在上方选一首音频、填好曲名，点「上传并入库」。');
+
+    // 改分类：点按钮就地变成下拉，选中即保存；Esc / 失焦取消。
+    // 保存成功后只改这一行的分类文字，不整表刷新 —— 免得打断正在试听的音频。
+    box.querySelectorAll('[data-bgm-cat]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled || !btn.isConnected) return;
+        const id = btn.dataset.bgmCat;
+        const t = tracks.find((x) => x.id === id);
+        const cur = String((t && t.category) || '其他');
+        const opts = BGM_CATS.indexOf(cur) >= 0 ? BGM_CATS.slice() : [cur].concat(BGM_CATS);
+        const sel = document.createElement('select');
+        sel.className = 'bgm-cat-select';
+        opts.forEach((v) => {
+          const o = document.createElement('option');
+          o.value = v; o.textContent = v;
+          if (v === cur) o.selected = true;
+          sel.appendChild(o);
+        });
+        btn.replaceWith(sel);
+        sel.focus();
+        let done = false;
+        const restore = () => { if (!done) { done = true; sel.replaceWith(btn); } };
+        const save = async (v) => {
+          if (done) return;
+          done = true;
+          if (v === cur) { sel.replaceWith(btn); return; }
+          try {
+            await api('/api/admin/bgm/category', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id, category: v })
+            });
+            const label = box.querySelector('[data-bgm-cat-label="' + id + '"]');
+            if (label) label.textContent = v;
+            if (t) t.category = v;      // 同一行再次点开时读到的是新值
+            toast('分类已改为「' + v + '」');
+            sel.replaceWith(btn);
+          } catch (e) {
+            toast('修改失败：' + e.message, 3200);
+            sel.replaceWith(btn);
+          }
+        };
+        sel.addEventListener('change', () => save(sel.value));
+        sel.addEventListener('blur', restore);
+        sel.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Escape') { ev.preventDefault(); restore(); }
+        });
+      });
+    });
+
     box.querySelectorAll('[data-bgm-del]').forEach((b) => {
       b.addEventListener('click', async () => {
         const id = b.dataset.bgmDel;
