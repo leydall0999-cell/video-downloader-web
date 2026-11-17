@@ -219,10 +219,10 @@ def _load_secret() -> bytes:
 _SECRET = _load_secret()
 PBKDF2_ITERS = 200_000
 TOKEN_TTL = 60 * 60 * 24 * 30  # 30 天
-# 后台专用令牌（2026-11-01）：网页后台走独立登录地址，令牌只活 2 小时。
+# 后台专用令牌（2026-11-01）：网页后台走独立登录地址，令牌只活 7 天（2026-10-10 由两小时延长）。
 # 与前台 30 天令牌**同一把签名密钥**（不新增 secret，避免部署新密钥的运维成本），
 # 靠 payload 多一段作用域标记 `adm` 区分 —— 见 issue_admin_token / verify_admin_token。
-ADMIN_TOKEN_TTL = 2 * 60 * 60  # 2 小时
+ADMIN_TOKEN_TTL = 7 * 24 * 60 * 60  # 7 天
 
 
 # --------------------------------------------------------------------------- #
@@ -378,7 +378,7 @@ def verify_token(token: str) -> Optional[str]:
 
 
 def issue_admin_token(user_id: str) -> str:
-    """签发**后台专用**令牌（2026-11-01）：payload 多一段作用域 `adm`，只活 2 小时。
+    """签发**后台专用**令牌（2026-11-01）：payload 多一段作用域 `adm`，只活 7 天。
 
     为什么单独一套：网页后台原来复用前台 30 天登录令牌，导致
       ① 必须先在前台登录超管账号，才能进后台（入口混在一起）；
@@ -423,7 +423,7 @@ def verify_admin_token(token: str) -> Optional[str]:
     if not hmac.compare_digest(expected, sig):
         return None
     if exp is not None and int(time.time()) > exp:
-        return None                      # 后台令牌过期（2 小时），需重新登录
+        return None                      # 后台令牌过期（7 天），需重新登录
     state = _user_auth_state(user_id)
     if state is None:
         return None
@@ -438,12 +438,12 @@ def verify_admin_token(token: str) -> Optional[str]:
 def token_from_header(authorization: Optional[str]) -> Optional[str]:
     """从 Authorization 头解析 uid，**两种作用域都认**。
 
-    普通令牌 → verify_token；后台令牌 → verify_admin_token（2 小时）。
+    普通令牌 → verify_token；后台令牌 → verify_admin_token（7 天）。
     后台令牌也认，是因为 /api/admin/* 端点内部大量直接用 get_current_user_id()
     取「我是谁」（标记当前账号、写审计 actor）。若这里只认前台令牌，后台登录后
     那些位置会拿到 None，「自己那行」会被渲染成「取消管理员 / 禁用」。
 
-    两个作用域仍是**签发端互斥**：前台令牌换不到后台页面，后台令牌 2 小时即失效。
+    两个作用域仍是**签发端互斥**：前台令牌换不到后台页面，后台令牌 7 天即失效。
     """
     if not authorization:
         return None

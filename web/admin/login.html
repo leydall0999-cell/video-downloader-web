@@ -78,7 +78,7 @@
   <div class="msg" id="msg"></div>
 
   <div class="foot">
-    凭据与前台账号相同；登录后有效期 <b>2 小时</b>，与前台会话互不影响。<br>
+    凭据与前台账号相同；登录后有效期 <b>7 天</b>，与前台会话互不影响。<br>
     同一 IP 连错 5 次将锁定 10 分钟。
   </div>
 </form>
@@ -99,7 +99,7 @@
   function hide() { $('msg').className = 'msg'; }
 
   // 已经持有未过期的后台令牌 → 直接进后台，不必再输一次密码。
-  // 校验走 /api/admin/whoami（服务端会验签名 + 2 小时过期 + 账号状态）。
+  // 校验走 /api/admin/whoami（服务端会验签名 + 7 天过期 + 账号状态）。
   var saved = (localStorage.getItem(KEY) || '').trim();
   if (saved) {
     say('检测到有效登录，正在进入…', true);

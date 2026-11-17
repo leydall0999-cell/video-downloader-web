@@ -142,7 +142,7 @@
     <h2><span class="dot"></span>后台需要单独登录</h2>
     <p class="note">
       后台已改成<b>独立登录</b>：不再复用前台账号的登录态。请到专用登录页验证身份，
-      登录后有效期 <b>2 小时</b>，与前台会话互不影响。
+      登录后有效期 <b>7 天</b>，与前台会话互不影响。
     </p>
     <div class="row">
       <a href="/admin/login"><button type="button">去登录</button></a>
@@ -426,7 +426,7 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  // 后台专用令牌（2 小时，adm 作用域）。与前台 vdl_auth_token **分开存**：
+  // 后台专用令牌（7 天，adm 作用域）。与前台 vdl_auth_token **分开存**：
   // 前台登录不会把登录态带进后台，后台退出也不影响前台正在用的会话。
   const ADMIN_KEY = 'vdl_admin_token';
   let TOKEN = (localStorage.getItem(ADMIN_KEY) || '').trim();
@@ -473,7 +473,7 @@
     opts.headers = Object.assign({ 'Authorization': 'Bearer ' + TOKEN }, opts.headers || {});
     const r = await fetch(path, opts);
     if (r.status === 401) {
-      // 后台令牌 2 小时到期 / 被改密作废 —— 清掉本地令牌送回登录页，
+      // 后台令牌 7 天到期 / 被改密作废 —— 清掉本地令牌送回登录页，
       // 而不是停在这个页面上一直报「未授权」让人以为坏了。
       localStorage.removeItem(ADMIN_KEY);
       toast('登录已过期，请重新登录', 2600);
