@@ -10877,7 +10877,7 @@ document.querySelectorAll('a.dl[data-text-target]').forEach(function(a){
   el.ucSubMerge.addEventListener('click', () => ucSwitchSub('merge'));
   el.tabDw.addEventListener('click', () => switchView('dw'));
   el.tabAppIntro.addEventListener('click', () => switchView('appIntro'));
-  // ---- 「更多功能」页能力计数：按卡片标签实时算，避免手写数字与卡片数漂移 ----
+  // ---- 「功能介绍」页能力计数：按卡片标签实时算，避免手写数字与卡片数漂移 ----
   // 卡片增删后不需要改 index.html 里的占位数字，也不会出现「网页可用 9」和实际卡片对不上。
   {
     const introCards = document.querySelectorAll('#appIntroGroups .app-intro-card');
