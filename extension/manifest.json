@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "视频工坊 媒体嗅探",
+  "version": "1.0.58",
+  "description": "嗅探网页中的视频、音频与 HLS 流，一键发给「视频工坊」桌面端下载；并可把已登录平台的登录态同步给本机 App 或云端。数据仅在本机流转。",
+  "permissions": [
+    "webRequest",
+    "cookies",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["sniff-core.js", "pagewatch.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "视频工坊 媒体嗅探",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}

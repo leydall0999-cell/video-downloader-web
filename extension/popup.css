@@ -1,0 +1,216 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1f2937;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2563eb;
+  --accent-soft: #eff6ff;
+  --ok: #059669;
+  --warn: #b45309;
+  --chip-playlist: #2563eb;
+  --chip-media: #059669;
+  --chip-segment: #b45309;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 380px;
+  max-height: 540px;
+  display: flex;
+  flex-direction: column;
+  font: 13px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+/* ---- header ---- */
+.hd { padding: 10px 12px 8px; border-bottom: 1px solid var(--line); }
+.hd-title { display: flex; align-items: center; font-size: 14px; font-weight: 600; }
+.hd-title .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); margin-right: 7px; display: inline-block;
+}
+.hd-title .switch { margin-left: auto; }
+.hd-endpoint { margin-top: 6px; font-size: 12px; color: var(--muted);
+  display: flex; align-items: center; gap: 6px; }
+.ep-ok { color: var(--ok); }
+.ep-none { color: var(--warn); }
+.ep-unknown { color: var(--muted); }
+
+/* ---- switch ---- */
+.switch { position: relative; display: inline-block; width: 34px; height: 19px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; inset: 0; border-radius: 19px;
+  background: #d1d5db; transition: background .15s;
+}
+.slider:before {
+  content: ""; position: absolute; width: 15px; height: 15px;
+  left: 2px; top: 2px; border-radius: 50%; background: #fff;
+  transition: transform .15s;
+}
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider:before { transform: translateX(15px); }
+
+/* ---- toolbar ---- */
+.toolbar {
+  display: flex; gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---- 清晰度选择行（2026-10-01）：发送给桌面端的解析类条目按此清晰度下载 ---- */
+.qrow {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-bottom: 1px solid var(--line);
+  font-size: 11px; color: var(--muted);
+}
+.qrow select {
+  font: inherit; font-size: 12px; color: var(--fg); background: #fff;
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px;
+}
+.qrow .q-hint { margin-left: auto; }
+button {
+  font: inherit; border: 1px solid var(--line); background: #fff;
+  color: var(--fg); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { opacity: .9; }
+button.ghost { background: transparent; }
+button.mini { font-size: 11px; padding: 1px 7px; border-radius: 5px; }
+
+/* ---- segment note ---- */
+.seg-note {
+  margin: 8px 12px 0; padding: 6px 9px; border-radius: 6px;
+  background: #fffbeb; color: var(--warn); font-size: 12px;
+}
+
+/* ---- list ---- */
+.list { flex: 1; overflow-y: auto; padding: 8px 12px; }
+.empty { color: var(--muted); text-align: center; padding: 26px 0; font-size: 12px; }
+.empty-tip { line-height: 1.7; }
+/* 兜底视图的「视频信息」两行（2026-10-02）：标题要压得住（深色、稍大），
+   元信息（时长/大小）保持弱化。父级 .empty 是居中的，这里沿用居中。 */
+.empty-title {
+  color: var(--fg); font-size: 13px; font-weight: 600; line-height: 1.5;
+  margin-bottom: 3px; word-break: break-word;
+}
+.empty-meta { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+.empty-q { margin-top: 6px; color: var(--fg); font-size: 12px; }
+.empty-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+.item {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 9px; margin-bottom: 8px;
+}
+.item.sent { border-color: var(--ok); background: #f0fdf4; }
+.item-top { display: flex; align-items: center; gap: 6px; }
+.chip {
+  flex: none; font-size: 10px; color: #fff; border-radius: 4px;
+  padding: 1px 6px; line-height: 1.5;
+}
+.chip.playlist { background: var(--chip-playlist); }
+.chip.media { background: var(--chip-media); }
+.chip.segment { background: var(--chip-segment); }
+.item-url {
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; direction: rtl; text-align: left;
+  font-size: 12px; color: var(--fg);
+}
+/* 显示的是媒体原名而非 URL（2026-11-13）：URL 为了露出尾部才用 rtl，
+   但中文歌名里的「 - 」会被 rtl 重排成乱序，必须改回 ltr。 */
+.item-url.item-named { direction: ltr; font-weight: 600; }
+.item-title {
+  margin-top: 2px; font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.item-meta { margin-top: 3px; font-size: 11px; color: var(--muted); }
+.item-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
+
+/* ---- footer ---- */
+.ft {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 12px; border-top: 1px solid var(--line); font-size: 11px;
+  color: var(--muted);
+}
+.ft .ck { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* ---- 桌面端未登录横幅（2026-09-27）：不提前说清楚，用户点下载只会看到
+   桌面端弹登录框（窗口在后台），误以为「点了没反应」 ---- */
+.login-warn {
+  margin: 8px 12px 0; padding: 6px 9px; border-radius: 6px;
+  background: #fef2f2; color: #b91c1c; font-size: 12px;
+}
+
+/* ---- 结果提示行：回执 / 批量发送汇总 ---- */
+.send-note {
+  margin: 8px 12px 0; padding: 6px 9px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent); font-size: 12px;
+}
+.send-note.is-err { background: #fef2f2; color: #b91c1c; }
+
+/* ---- 条目级结果（成功淡色提示 / 失败红字原因） ---- */
+.item-msg { margin-top: 3px; font-size: 11px; color: var(--muted); }
+.item-msg.is-err { color: #b91c1c; }
+
+/* 「页面」条目（发送当前页）用的标签色 */
+.chip.page { background: #7c3aed; }
+
+
+/* ---- 登录态同步（2026-10-18）----
+   折叠面板而非新 tab：popup 只有 380×540，多一个 tab 会挤压主列表；
+   折叠状态下只占一行，不点开就不触发任何 Cookie 读取。 */
+.ckz { border-top: 1px solid var(--line); background: #fafbfc; flex: none; }
+.ckz-hd {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; cursor: pointer; list-style: none;
+  font-size: 12px; color: var(--muted); user-select: none;
+}
+.ckz-hd::-webkit-details-marker { display: none; }
+.ckz-hd::before {
+  content: '▸'; font-size: 10px; color: var(--muted);
+  transition: transform .15s; display: inline-block;
+}
+.ckz[open] > .ckz-hd::before { transform: rotate(90deg); }
+.ckz-title { font-weight: 600; color: var(--fg); }
+.ckz-sub { margin-left: auto; font-size: 11px; }
+.ckz-sub.is-ok { color: var(--ok); }
+.ckz-sub.is-warn { color: var(--warn); }
+
+.ckz-body { padding: 0 12px 10px; max-height: 208px; overflow: auto; }
+.ckz-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ckz-tip { font-size: 11px; color: var(--muted); }
+
+.ckz-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 7px; }
+.ckz-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 3px 6px; border-radius: 5px; background: #fff;
+  border: 1px solid var(--line);
+}
+.ckz-row .nm { flex: none; min-width: 76px; }
+.ckz-row .st { font-size: 11px; color: var(--muted); margin-left: auto; }
+.ckz-row.on .st { color: var(--ok); }
+.ckz-row.off { opacity: .62; }
+.ckz-row .tag {
+  font-size: 10px; padding: 0 4px; border-radius: 3px;
+  background: #f3f4f6; color: var(--muted);
+}
+
+.ckz-agree {
+  display: flex; align-items: flex-start; gap: 5px;
+  font-size: 11px; line-height: 1.45; color: var(--muted);
+  margin: 2px 0 8px; cursor: pointer;
+}
+.ckz-agree input { margin-top: 2px; flex: none; }
+
+.ckz-actions { display: flex; gap: 6px; }
+.ckz-actions button { flex: 1; }
+.ckz-actions button:disabled { opacity: .5; cursor: not-allowed; }
+
+.ckz-msg {
+  margin-top: 7px; padding: 5px 8px; border-radius: 5px;
+  font-size: 11px; background: var(--accent-soft); color: var(--accent);
+}
+.ckz-msg.is-err { background: #fef2f2; color: #b91c1c; }
+.ckz-msg.is-ok { background: #ecfdf5; color: #047857; }

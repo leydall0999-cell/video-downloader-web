@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+  <title>视频工坊 媒体嗅探</title>
+</head>
+<body>
+  <header class="hd">
+    <div class="hd-title">
+      <span class="dot"></span>媒体嗅探
+      <label class="switch" title="嗅探开关">
+        <input type="checkbox" id="sniffToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="hd-endpoint" id="endpointRow">
+      <span id="endpointText" class="ep-unknown">探测桌面端…</span>
+      <button id="reDetect" class="mini" title="重新探测桌面端地址">重探</button>
+    </div>
+  </header>
+
+  <div id="loginWarn" class="login-warn" hidden></div>
+
+  <div class="toolbar">
+    <button id="sendAll" class="primary" title="把下面列出的（当前页嗅到的）全部发给桌面端">全部发送</button>
+    <button id="sendPage" class="ghost" title="把当前网页地址交给桌面端解析（YouTube 等站点扩展嗅不到直链，用这个最稳）">发送当前页</button>
+    <button id="clearAll" class="ghost" title="清空当前页的嗅探结果（其它页面本就不保留）">清空</button>
+  </div>
+
+  <!-- 清晰度（2026-10-01 用户反馈「目前没法选择分辨率」）：扩展发来的条目原本被桌面端
+       一律按「最佳画质（自动）」建任务，用户无从选择。这里选的清晰度随每条发送上报，
+       桌面端解析类条目按它下载。 -->
+  <div class="qrow">
+    <label for="sendQuality">清晰度</label>
+    <select id="sendQuality" title="交给桌面端解析下载时使用的清晰度">
+      <option value="best">最佳画质（自动）</option>
+      <option value="2160">4K 2160P</option>
+      <option value="1440">2K 1440P</option>
+      <option value="1080">1080P 高清</option>
+      <option value="720">720P 高清</option>
+      <option value="480">480P 标清</option>
+      <option value="360">360P 流畅</option>
+      <option value="audio">仅音频 MP3</option>
+    </select>
+    <span class="q-hint">解析类条目按此清晰度下载</span>
+  </div>
+
+  <div id="sendNote" class="send-note" hidden></div>
+
+  <div id="segNote" class="seg-note" hidden></div>
+
+  <main id="list" class="list">
+    <div class="empty">当前页没有嗅探到媒体流。<br>播放页面里的视频或音频后这里会自动列出；已离开的页面不会保留。</div>
+  </main>
+
+  <!-- 登录态（2026-10-18）：按站读取用户浏览器里的**完整登录态**（chrome.cookies），
+       交给本机 App 写进 Cookie 缓存，或用户显式同意后贡献到云端公共池——
+       网页版受同源策略限制拿不到别站 Cookie，公共池是它唯一的登录态来源。
+       默认折叠：多数用户只用嗅探，展开才真正去读 Cookie（避免无谓的权限调用）。 -->
+  <details class="ckz" id="ckZone">
+    <summary class="ckz-hd">
+      <span class="ckz-title">登录态同步</span>
+      <span class="ckz-sub" id="ckSummary">展开后点「扫描」</span>
+    </summary>
+    <div class="ckz-body">
+      <div class="ckz-bar">
+        <button id="ckScan" class="mini">扫描已登录平台</button>
+        <span class="ckz-tip">只读取，不会自动外发</span>
+      </div>
+      <div id="ckList" class="ckz-list"></div>
+      <label class="ckz-agree">
+        <input type="checkbox" id="ckAgree" checked>
+        默认把已登录的平台共享到云端公共池，帮网页版拿到登录态（取消勾选则不共享）
+      </label>
+      <div class="ckz-actions">
+        <button id="ckPushLocal" class="primary" disabled>存到我自己的 App</button>
+        <button id="ckPushCloud" class="ghost" disabled>贡献到云端池</button>
+      </div>
+      <div id="ckMsg" class="ckz-msg" hidden></div>
+    </div>
+  </details>
+
+  <footer class="ft">
+    <label class="ck"><input type="checkbox" id="carryCookie" checked> 发送时携带页面 Cookie</label>
+    <span class="hint">发送后在桌面端任务列表查看进度</span>
+  </footer>
+
+  <script src="cookie-harvest.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
