@@ -57,6 +57,11 @@ function syncQualityUI() {
   var q = state.quality || 'best';
   var sel = $('sendQuality');
   if (sel && sel.value !== q) sel.value = q;
+  // 可视档位条高亮当前档（2026-11-20）：与下拉值永远一致。
+  var chips = document.querySelectorAll('#qualityChips .qchip');
+  for (var i = 0; i < chips.length; i++) {
+    chips[i].classList.toggle('is-on', chips[i].getAttribute('data-q') === q);
+  }
   var line = document.querySelector('.empty-q');
   if (line) line.textContent = '将以「' + qualityLabel(q) + '」下载';
 }
@@ -589,6 +594,23 @@ $('sendQuality').addEventListener('change', function (e) {
   try { chrome.storage.local.set({ sendQuality: state.quality }); } catch (err) { /* 静默 */ }
   syncQualityUI();
 });
+// 可视档位条点击（2026-11-20）：写回同一个 select 并派发 change，
+// 完全复用上面的 state 更新 / storage 记忆 / UI 同步逻辑，不重复实现。
+(function bindQualityChips() {
+  var chips = document.querySelectorAll('#qualityChips .qchip');
+  for (var i = 0; i < chips.length; i++) {
+    chips[i].addEventListener('click', function (e) {
+      var v = e.currentTarget.getAttribute('data-q');
+      var sel = $('sendQuality');
+      if (!sel || QUALITY_OPTIONS.indexOf(v) < 0) return;
+      sel.value = v;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+  // 初始高亮：不依赖 render/chrome.storage 回调（那些在异常态可能不跑），
+  // 这里立即按当前 state.quality 点亮一次，保证档位条一出现就有选中态。
+  syncQualityUI();
+})();
 $('clearAll').addEventListener('click', function () {
   chrome.runtime.sendMessage({ type: 'clear' }, refresh);
 });

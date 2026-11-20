@@ -45,6 +45,20 @@
     </select>
     <span class="q-hint">解析类条目按此清晰度下载</span>
   </div>
+  <!-- 可视档位条（2026-11-20 用户反馈「没有选择分辨率、都是默认」）：
+       原来的 <select> 收起后只显示「最佳画质（自动）」一行淡字，看起来像说明文字，
+       用户不知道能点开选。这里把 8 档铺成一眼可见的按钮，点哪档选哪档；
+       底层仍写回同一个 #sendQuality 并派发 change，完全复用既有上报/记忆逻辑。 -->
+  <div class="qchips" id="qualityChips" role="group" aria-label="选择清晰度">
+    <button type="button" class="qchip" data-q="best" title="最佳画质（自动）">自动</button>
+    <button type="button" class="qchip" data-q="2160" title="4K 2160P">4K</button>
+    <button type="button" class="qchip" data-q="1440" title="2K 1440P">2K</button>
+    <button type="button" class="qchip" data-q="1080" title="1080P 高清">1080P</button>
+    <button type="button" class="qchip" data-q="720" title="720P 高清">720P</button>
+    <button type="button" class="qchip" data-q="480" title="480P 标清">480P</button>
+    <button type="button" class="qchip" data-q="360" title="360P 流畅">360P</button>
+    <button type="button" class="qchip" data-q="audio" title="仅音频 MP3">仅音频</button>
+  </div>
 
   <div id="sendNote" class="send-note" hidden></div>
 

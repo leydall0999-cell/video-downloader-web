@@ -70,6 +70,20 @@ body {
   border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px;
 }
 .qrow .q-hint { margin-left: auto; }
+/* 可视清晰度档位条（2026-11-20）：一眼可见全部档位，点选即生效 */
+.qchips {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 7px 12px; border-bottom: 1px solid var(--line);
+}
+.qchip {
+  font: inherit; font-size: 10.5px; line-height: 1; cursor: pointer;
+  padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px;
+  background: #fff; color: var(--muted); white-space: nowrap;
+}
+.qchip:hover { border-color: var(--accent); color: var(--accent); }
+.qchip.is-on {
+  background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+}
 button {
   font: inherit; border: 1px solid var(--line); background: #fff;
   color: var(--fg); border-radius: 6px; padding: 4px 10px; cursor: pointer;
