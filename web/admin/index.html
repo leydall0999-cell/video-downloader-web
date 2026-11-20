@@ -584,6 +584,35 @@
     idphoto: '证件照',
     sniffer: '浏览器嗅探',
   };
+  const numFmt = (n) => Number(n || 0).toLocaleString('zh-CN');
+  // 全功能清单（对齐 App 首页 #homeGrid 的 20 项，2026-11-20）。
+  // 每项 keys = 授权中心可能的 resource 别名（同功能多端可能用不同 key，求和）。
+  // keys 为空 = 纯本地功能，不上云计次 ⇒ 云端统计恒 0（不是没人在用，是引擎不报数）。
+  // 这样功能表「列全」，且诚实区分「有云端计数」与「本地功能不计」。
+  const FULL_FEATURES = [
+    { group: '创作',   name: '视频解说',      keys: ['commentary', 'cloud_commentary'] },
+    { group: '创作',   name: '本地字幕提取',  keys: ['subtitle', 'cloud_subtitle'] },
+    { group: '下载',   name: '视频下载',      keys: ['download'] },
+    { group: '下载',   name: '网盘下载',      keys: ['cloud_drive'] },
+    { group: '下载',   name: '订阅追更',      keys: [] },   // 与下载共用额度，不单独上报
+    { group: '下载',   name: '种子下载',      keys: [] },
+    { group: '转换',   name: '视频格式转换',  keys: ['convert_video', 'cloud_convert'] },
+    { group: '转换',   name: '音乐转换',      keys: ['convert_audio'] },
+    { group: '转换',   name: '图片转换',      keys: ['convert_image'] },
+    { group: '转换',   name: '文档转换',      keys: [] },   // 本机 LibreOffice，不上云
+    { group: '转换',   name: '高效压缩',      keys: ['compress'] },
+    { group: '转换',   name: '高清修复',      keys: ['sr', 'sr_video'] },
+    { group: '转换',   name: '生成二维码',    keys: ['share_qr'] },
+    { group: '转换',   name: '生成网页',      keys: ['share_page'] },
+    { group: '工具',   name: '图片去水印',    keys: ['cloud_dewatermark', 'dewatermark'] },
+    { group: '工具',   name: 'PDF 去水印',    keys: ['cloud_dewatermark_pdf'] },
+    { group: '工具',   name: '视频去水印',    keys: ['dewatermark_video'] },
+    { group: '工具',   name: '一键抠图',      keys: ['matting', 'matting_cloud'] },
+    { group: '工具',   name: '音视频桥接',    keys: ['bridge'] },
+    { group: '工具',   name: '证件照',        keys: ['idphoto'] },
+    { group: '其他',   name: '媒体嗅探',      keys: ['sniffer'] },
+    { group: '其他',   name: '媒体库',        keys: [] },   // 本机管理，不上云
+  ];
   // 需求榜分类 → 人话（见 resolve_demand.py 顶部口径说明）
   const CAT_LABEL = {
     pending_extractor: '待补提取器',
@@ -1862,11 +1891,12 @@
     const byKind = d.by_kind || {};
     const total = Number(d.total || 0);
     const keys = Object.keys(byKind).sort((a, b) => Number(byKind[b]) - Number(byKind[a]));
+    const cloudRes = d.cloud_overview ? (d.cloud_overview.by_resource || {}) : {};
+    const cloudKeys = Object.keys(cloudRes);
     $('statsKpis').innerHTML = kpi(total, '本机事件总数')
       + kpi(keys.length, '事件类型')
       + kpi(d.cloud_overview ? (d.cloud_overview.active_users || 0) : '—', '云端活跃账号')
-      + kpi(d.cloud_overview ? Object.keys(d.cloud_overview.by_resource || {}).length : '—',
-        '云端功能维度');
+      + kpi(cloudKeys.length + '/' + FULL_FEATURES.length, '有计数/全部功能');
     const body = keys.map((k) => {
       const name = k.indexOf('quota_block_') === 0
         ? '会员墙拦截 · ' + (RES_LABEL[k.replace('quota_block_', '')] || k.replace('quota_block_', ''))
@@ -1881,13 +1911,45 @@
     const ov = d.cloud_overview;
     if (ov) {
       const res = ov.by_resource || {};
-      const rk = Object.keys(res).sort((a, b) => Number(res[b]) - Number(res[a]));
-      html += '<p class="sub-h">授权中心口径 · 三端真实配额消耗（近 '
-        + esc(ov.days || 30) + ' 天）</p>';
-      html += table(['功能', '次数'],
-        rk.map((k) => '<tr><td>' + esc(RES_LABEL[k] || k) + '</td>'
-          + '<td class="real">' + esc(res[k]) + '</td></tr>'),
+      // 按 App 首页分组列全所有功能；每项把多个 resource 别名求和。
+      const sumKeys = (keys) => keys.reduce((n, k) => n + Number(res[k] || 0), 0);
+      // 已展示的 resource（防重复）：清单里出现过的 key 打勾。
+      const shown = new Set();
+      const groups = {};
+      FULL_FEATURES.forEach((f) => {
+        f.keys.forEach((k) => shown.add(k));
+        (groups[f.group] = groups[f.group] || []).push(f);
+      });
+      const rows = [];
+      Object.keys(groups).forEach((g) => {
+        rows.push('<tr><td colspan="2" class="note" style="padding-top:10px">— '
+          + esc(g) + ' —</td></tr>');
+        groups[g].forEach((f) => {
+          const n = sumKeys(f.keys);
+          const local = !f.keys.length;
+          const num = local ? '<span class="chip mute" title="本地功能，不上云计次">本地不计</span>'
+            : '<span class="real">' + numFmt(n) + '</span>';
+          rows.push('<tr><td>' + esc(f.name)
+            + (f.keys.length > 1 ? '<br><span class="note">含 ' + f.keys.map(k => esc(RES_LABEL[k] || k)).join(' / ') + '</span>' : '')
+            + '</td><td class="real">' + num + '</td></tr>');
+        });
+      });
+      // 云端有、但清单未登记的未知 key：照实列出，别漏（防止映射表滞后）。
+      const extra = cloudKeys.filter((k) => !shown.has(k)).sort((a, b) => Number(res[b]) - Number(res[a]));
+      if (extra.length) {
+        rows.push('<tr><td colspan="2" class="note" style="padding-top:10px">— 其它（云端有记录但未归类）—</td></tr>');
+        extra.forEach((k) => rows.push('<tr><td>' + esc(RES_LABEL[k] || k)
+          + '<br><span class="note">' + esc(k) + '</span></td><td class="real">'
+          + numFmt(res[k]) + '</td></tr>'));
+      }
+      html += '<p class="sub-h">授权中心口径 · 全功能用量（近 '
+        + esc(ov.days || 30) + ' 天）· 共 ' + FULL_FEATURES.length + ' 项，其中 '
+        + cloudKeys.length + ' 项有云端计数</p>';
+      html += table(['功能', '次数'], rows,
         '云端近 ' + _statsDays + ' 天没有配额消耗记录。');
+      html += '<p class="note" style="margin-top:8px">「本地不计」= 该功能在本机运行、'
+        + '不消耗云端配额也不上报次数，所以云端统计恒为 0；不代表没人用。'
+        + '本机事件（页面顶部）里部分功能有记录。</p>';
     } else {
       html += '<p class="note" style="margin-top:12px">'
         + '拿不到云端用量（授权中心不可达或没配管理令牌），上面的数字只是本机口径。</p>';
