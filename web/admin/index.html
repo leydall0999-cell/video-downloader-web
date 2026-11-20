@@ -142,7 +142,7 @@
     <h2><span class="dot"></span>后台需要单独登录</h2>
     <p class="note">
       后台已改成<b>独立登录</b>：不再复用前台账号的登录态。请到专用登录页验证身份，
-      登录后有效期 <b>7 天</b>，与前台会话互不影响。
+      登录后有效期 <b>2 小时</b>，与前台会话互不影响。
     </p>
     <div class="row">
       <a href="/admin/login"><button type="button">去登录</button></a>
@@ -426,7 +426,7 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  // 后台专用令牌（7 天，adm 作用域）。与前台 vdl_auth_token **分开存**：
+  // 后台专用令牌（2 小时，adm 作用域）。与前台 vdl_auth_token **分开存**：
   // 前台登录不会把登录态带进后台，后台退出也不影响前台正在用的会话。
   const ADMIN_KEY = 'vdl_admin_token';
   let TOKEN = (localStorage.getItem(ADMIN_KEY) || '').trim();
@@ -473,7 +473,7 @@
     opts.headers = Object.assign({ 'Authorization': 'Bearer ' + TOKEN }, opts.headers || {});
     const r = await fetch(path, opts);
     if (r.status === 401) {
-      // 后台令牌 7 天到期 / 被改密作废 —— 清掉本地令牌送回登录页，
+      // 后台令牌 2 小时到期 / 被改密作废 —— 清掉本地令牌送回登录页，
       // 而不是停在这个页面上一直报「未授权」让人以为坏了。
       localStorage.removeItem(ADMIN_KEY);
       toast('登录已过期，请重新登录', 2600);
@@ -542,9 +542,32 @@
     download: '视频下载',
     cloud_drive: '网盘下载',
     matting: '图片抠图',
+    matting_cloud: '云端抠图',
     dewatermark: '去水印',
+    dewatermark_video: '视频去水印',
     commentary: '视频解说',
+    cloud_commentary: '视频解说',
     subtitle: '字幕提取',
+    cloud_subtitle: '字幕提取(在线)',
+    cloud_subtitle_burn: '字幕烧录',
+    cloud_subtitle_translate: '字幕翻译',
+    convert_video: '视频格式转换',
+    concat_video: '视频拼接',
+    convert_audio: '音乐转换',
+    concat_audio: '音频拼接',
+    convert_image: '图片转换',
+    compress: '高效压缩',
+    sr: '高清修复',
+    sr_video: '视频超分',
+    bridge: '音视频桥接',
+    cloud_convert: '在线转码',
+    cloud_concat: '在线拼接',
+    cloud_dewatermark: '图片去水印(在线)',
+    cloud_dewatermark_pdf: 'PDF 去水印',
+    share_qr: '生成二维码',
+    share_page: '生成网页',
+    idphoto: '证件照',
+    sniffer: '浏览器嗅探',
   };
   // 需求榜分类 → 人话（见 resolve_demand.py 顶部口径说明）
   const CAT_LABEL = {
@@ -1801,6 +1824,22 @@
 
   async function loadStats() {
     const d = await api('/api/admin/stats');
+    // 云端三端各功能用量：后端 /api/admin/stats 历来只回本机统计、不含 cloud_overview，
+    // 导致「授权中心口径 · 三端真实配额消耗」这块一直不显示（用户 2026-11-20 反馈
+    // 「只看到下载」）。这里旁路拉 /api/admin/platform-usage（与「平台健康」同源，
+    // 数据来自授权中心真实配额消耗）补上；中心不可达则降级为本机口径，不影响主表。
+    if (!d.cloud_overview) {
+      try {
+        const pu = await api('/api/admin/platform-usage?days=30');
+        if (pu && pu.ok !== false) {
+          d.cloud_overview = {
+            by_resource: pu.by_resource || {},
+            active_users: (pu.totals && pu.totals.accounts) || 0,
+            days: pu.days || 30,
+          };
+        }
+      } catch (e) { /* 云端不可达：保留本机口径，不阻断统计页 */ }
+    }
     const byKind = d.by_kind || {};
     const total = Number(d.total || 0);
     const keys = Object.keys(byKind).sort((a, b) => Number(byKind[b]) - Number(byKind[a]));
