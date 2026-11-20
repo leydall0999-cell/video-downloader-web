@@ -63,6 +63,9 @@
   .chip.warn { color:var(--amber); border-color:rgba(255,184,77,.5); background:rgba(255,184,77,.1); }
   .chip.good { color:var(--green); border-color:rgba(66,211,146,.5); background:rgba(66,211,146,.1); }
   .chip.mute { color:var(--muted); }
+  .chip.is-on { color:var(--accent); border-color:var(--accent); background:rgba(91,140,255,.12); font-weight:600; }
+  .chip-btn { cursor:pointer; background:none; font-family:inherit; }
+  .chip-btn:hover { border-color:var(--accent); }
   .kpis { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:12px; }
   .kpi { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 16px; min-width:104px; }
   .kpi b { display:block; font-size:20px; font-weight:600; line-height:1.3; }
@@ -295,12 +298,24 @@
       两个口径别混：本机事件只记经过这台服务器的请求；三端用量是授权中心里
       <b>真正消耗配额</b>的次数（详见「平台健康 → 三端用量」）。免费额度被拦的另记在会员墙拦截里。
     </p>
-    <div class="toolbar">
+    <div class="toolbar" style="flex-wrap:wrap;gap:8px;align-items:center">
+      <span class="note">时间段</span>
+      <span id="statsRangeBar" style="display:inline-flex;gap:6px;flex-wrap:wrap">
+        <button type="button" class="chip chip-btn" data-days="1">近 1 天</button>
+        <button type="button" class="chip chip-btn" data-days="3">近 3 天</button>
+        <button type="button" class="chip chip-btn" data-days="7">近 7 天</button>
+        <button type="button" class="chip chip-btn is-on" data-days="30">近 30 天</button>
+        <button type="button" class="chip chip-btn" data-days="180">近半年</button>
+        <button type="button" class="chip chip-btn" data-days="365">近 1 年</button>
+      </span>
+      <button id="statsRefresh" class="ghost" style="margin-left:auto">刷新</button>
       <button id="statsReset" class="ghost">重置本机统计</button>
       <span class="note" id="statsMeta"></span>
     </div>
     <div class="kpis" id="statsKpis"></div>
     <div id="statsBox"></div>
+    <p class="sub-h">三端设备分布（网页 / Mac / Windows · 授权中心设备画像）</p>
+    <div id="platformSplitBox"></div>
     <p class="sub-h">三端安装与活跃（授权中心的设备记录）</p>
     <div class="kpis" id="installKpis"></div>
     <div id="installBox"></div>
@@ -1821,25 +1836,29 @@
     resolve: '解析请求', download: '下载', cloud_drive: '网盘下载', matting: '抠图',
     dewatermark: '去水印', commentary: '视频解说', subtitle: '字幕提取',
   };
+  // 时间段状态（六档：1/3/7/30/180/365 天）。功能用量按天聚合（授权中心 by_day），
+  // 后端 /api/admin/platform-usage?days= 支持 1~366，六档都是真实数据、非估算。
+  let _statsDays = 30;
+  // 功能时间段 → 端分布接口的 range（platform_stats 只认 day/3d/week/month/空=全部）。
+  // 半年/1 年在端分布侧没有对应档，退回「全部」（设备画像本来就是当前快照）。
+  const _daysToRange = { 1: 'day', 3: '3d', 7: 'week', 30: 'month', 180: '', 365: '' };
 
   async function loadStats() {
     const d = await api('/api/admin/stats');
     // 云端三端各功能用量：后端 /api/admin/stats 历来只回本机统计、不含 cloud_overview，
     // 导致「授权中心口径 · 三端真实配额消耗」这块一直不显示（用户 2026-11-20 反馈
-    // 「只看到下载」）。这里旁路拉 /api/admin/platform-usage（与「平台健康」同源，
-    // 数据来自授权中心真实配额消耗）补上；中心不可达则降级为本机口径，不影响主表。
-    if (!d.cloud_overview) {
-      try {
-        const pu = await api('/api/admin/platform-usage?days=30');
-        if (pu && pu.ok !== false) {
-          d.cloud_overview = {
-            by_resource: pu.by_resource || {},
-            active_users: (pu.totals && pu.totals.accounts) || 0,
-            days: pu.days || 30,
-          };
-        }
-      } catch (e) { /* 云端不可达：保留本机口径，不阻断统计页 */ }
-    }
+    // 「只看到下载」）。这里按当前时间段旁路拉 /api/admin/platform-usage（与「平台健康」
+    // 同源、来自授权中心真实配额消耗）补上；中心不可达则降级为本机口径，不影响主表。
+    try {
+      const pu = await api('/api/admin/platform-usage?days=' + _statsDays);
+      if (pu && pu.ok !== false) {
+        d.cloud_overview = {
+          by_resource: pu.by_resource || {},
+          active_users: (pu.totals && pu.totals.accounts) || 0,
+          days: pu.days || _statsDays,
+        };
+      }
+    } catch (e) { /* 云端不可达：保留本机口径，不阻断统计页 */ }
     const byKind = d.by_kind || {};
     const total = Number(d.total || 0);
     const keys = Object.keys(byKind).sort((a, b) => Number(byKind[b]) - Number(byKind[a]));
@@ -1868,13 +1887,50 @@
       html += table(['功能', '次数'],
         rk.map((k) => '<tr><td>' + esc(RES_LABEL[k] || k) + '</td>'
           + '<td class="real">' + esc(res[k]) + '</td></tr>'),
-        '云端近 30 天没有配额消耗记录。');
+        '云端近 ' + _statsDays + ' 天没有配额消耗记录。');
     } else {
       html += '<p class="note" style="margin-top:12px">'
         + '拿不到云端用量（授权中心不可达或没配管理令牌），上面的数字只是本机口径。</p>';
     }
     $('statsBox').innerHTML = html;
-    loadInstallStats().catch(() => {});   // 旁路：中心不可达不影响本机口径
+    // 端分布（网页/Mac/Win 设备）与装机统计都是旁路，中心不可达不影响功能表。
+    loadPlatformSplit().catch(() => {});
+    loadInstallStats().catch(() => {});
+  }
+
+  // 三端设备分布：网页版 / Mac / Windows 各多少台设备、多少账号、活跃。
+  // ⚠️ 口径是「设备/账号数」，不是「各端用了几次功能」——授权中心用量明细里
+  // 没有端字段，无法做「Mac 用了几次解说」这种交叉（用户 2026-11-20 选并列展示）。
+  async function loadPlatformSplit() {
+    const box = $('platformSplitBox');
+    if (!box) return;
+    const range = _daysToRange[_statsDays] != null ? _daysToRange[_statsDays] : 'month';
+    try {
+      const d = await api('/api/admin/platforms?range=' + encodeURIComponent(range));
+      if (!d || d.ok === false) {
+        box.innerHTML = '<p class="note">端分布不可用：' + esc((d && d.error) || '未知原因') + '</p>';
+        return;
+      }
+      const P = {};
+      (d.platforms || []).forEach((x) => { P[x.platform] = x; });
+      const num = (n) => Number(n || 0).toLocaleString('zh-CN');
+      const card = (label, s) => '<div class="kpi"><div class="kpi-num">' + num(s ? s.devices : 0)
+        + '</div><div class="kpi-label">' + esc(label) + '</div>'
+        + (s ? '<div class="note">' + num(s.users) + ' 账号 · 活跃 7 天 ' + num(s.active_7d)
+          + ' · 全部 ' + num(s.all_devices != null ? s.all_devices : s.devices) + ' 台</div>' : '')
+        + '</div>';
+      box.innerHTML = '<div class="kpis">'
+        + card('Windows 版', P.windows)
+        + card('Mac 版', P.macos)
+        + card('网页版', P.web)
+        + (P.unknown && P.unknown.devices ? card('未识别', P.unknown) : '')
+        + '</div>'
+        + '<p class="note">' + esc(d.range_label || '全部') + '设备 · 登录设备共 '
+        + num(d.total_devices) + ' 台 / ' + num(d.total_users)
+        + ' 个账号 · Mac/Win 按设备计、网页版含访客口径（详见「运维监控」页）。</p>';
+    } catch (e) {
+      box.innerHTML = '<p class="note">端分布加载失败：' + esc(e.message || e) + '</p>';
+    }
   }
 
   // 三端安装 / 活跃（2026-11-01）：原来只有桌面 App 后台能看「装了多少台」。
@@ -1951,6 +2007,22 @@
     }
   }
   $('statsReset').addEventListener('click', () => resetStats().catch((e) => toast(e.message, 4200)));
+  // 时间段切换（六档）：切换后重拉功能用量表 + 端分布，两者口径都跟着变。
+  (function bindStatsRange() {
+    const bar = $('statsRangeBar');
+    if (!bar) return;
+    bar.querySelectorAll('.chip-btn[data-days]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const days = Number(btn.dataset.days || 30);
+        if (days === _statsDays) return;
+        _statsDays = days;
+        bar.querySelectorAll('.chip-btn').forEach((b) => b.classList.toggle('is-on', b === btn));
+        loadStats().catch((e) => toast('统计加载失败：' + (e.message || e), 4200));
+      });
+    });
+    const rf = $('statsRefresh');
+    if (rf) rf.addEventListener('click', () => loadStats().catch((e) => toast(e.message || e, 4200)));
+  })();
 
   // ---------------- 系统配置（2026-11-01：从只读改为可改 + 下发三端） ----------------
   // 三块：套餐档位 / 免费额度 / SMTP。前两块必须下发授权中心，否则三端不认。
