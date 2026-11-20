@@ -594,12 +594,12 @@
     { group: '创作',   name: '本地字幕提取',  keys: ['subtitle', 'cloud_subtitle'] },
     { group: '下载',   name: '视频下载',      keys: ['download'] },
     { group: '下载',   name: '网盘下载',      keys: ['cloud_drive'] },
-    { group: '下载',   name: '订阅追更',      keys: [] },   // 与下载共用额度，不单独上报
-    { group: '下载',   name: '种子下载',      keys: [] },
+    { group: '下载',   name: '订阅追更',      keys: ['subscribe'] },
+    { group: '下载',   name: '种子下载',      keys: ['torrent'] },
     { group: '转换',   name: '视频格式转换',  keys: ['convert_video', 'cloud_convert'] },
     { group: '转换',   name: '音乐转换',      keys: ['convert_audio'] },
     { group: '转换',   name: '图片转换',      keys: ['convert_image'] },
-    { group: '转换',   name: '文档转换',      keys: [] },   // 本机 LibreOffice，不上云
+    { group: '转换',   name: '文档转换',      keys: ['docconvert'] },
     { group: '转换',   name: '高效压缩',      keys: ['compress'] },
     { group: '转换',   name: '高清修复',      keys: ['sr', 'sr_video'] },
     { group: '转换',   name: '生成二维码',    keys: ['share_qr'] },
