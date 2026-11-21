@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "视频工坊 媒体嗅探",
-  "version": "1.0.58",
+  "version": "1.0.59",
   "description": "嗅探网页中的视频、音频与 HLS 流，一键发给「视频工坊」桌面端下载；并可把已登录平台的登录态同步给本机 App 或云端。数据仅在本机流转。",
   "permissions": [
     "webRequest",
